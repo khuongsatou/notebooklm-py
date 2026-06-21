@@ -151,7 +151,11 @@ class FakeNotes:
         if existing is None:
             raise NoteNotFoundError(note_id)
         self._s.notes_store[notebook_id][note_id] = Note(
-            id=note_id, notebook_id=notebook_id, title=title, content=content
+            id=note_id,
+            notebook_id=notebook_id,
+            title=title,
+            content=content,
+            created_at=existing.created_at,
         )
 
     async def delete(self, notebook_id: str, note_id: str) -> None:
