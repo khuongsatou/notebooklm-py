@@ -67,10 +67,14 @@ def _coerce_cookie_json_to_storage_state(payload: Any) -> dict[str, Any]:
     )
 
 
-def _normalize_imported_cookie(cookie: Any) -> Any:
+def _normalize_imported_cookie(cookie: Any) -> dict[str, Any]:
     """Translate common browser-export cookie fields toward storage_state."""
     if not isinstance(cookie, dict):
-        return cookie
+        # Reject non-object entries at the boundary rather than pass them through
+        # to the downstream extractor (which assumes dict-like rows).
+        raise click.ClickException(  # cli-input-validation: import-cookies non-object cookie entry
+            "Each cookie must be a JSON object; the cookie list contains a non-object entry."
+        )
 
     normalized = dict(cookie)
     if "expires" not in normalized:

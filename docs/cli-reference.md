@@ -460,12 +460,12 @@ notebooklm auth import-cookies JSON_PATH [OPTIONS]
 
 Accepts either a Playwright `storage_state` object (`{"cookies": [...]}`) or a bare JSON list of cookie objects (the shape most browser cookie-export tools produce). Use `-` to read JSON from stdin. Common export fields are normalized (e.g. `expirationDate` → `expires`), `__Secure-`/`__Host-` cookies are forced `Secure`, and any `storage_state` `origins` (localStorage/sessionStorage) are dropped.
 
-Imported cookies are filtered through the **same domain allowlist** used by browser login, validated locally for the NotebookLM-required cookies (and a usable secondary binding — `OSID`, or `APISID`+`SAPISID`), and written atomically with private (`0o600`) permissions. Invalid input never overwrites an existing session, and an existing `storage_state.json` is first copied to `storage_state.json.bak` so a stale import can be rolled back.
+Imported cookies are filtered through the **same domain allowlist** used by browser login, validated locally for the NotebookLM-required cookies (and a usable secondary binding — `OSID`, or `APISID`+`SAPISID`), and written atomically with private (`0o600`) permissions. Invalid input never overwrites an existing session, and an existing `storage_state.json` is first copied to `storage_state.json.bak` so a stale import can be rolled back (one step — each run overwrites the previous `.bak`).
 
-Incompatible with `NOTEBOOKLM_AUTH_JSON`: unset that env var first, otherwise the env auth takes precedence and the imported file would be ignored.
+Incompatible with `NOTEBOOKLM_AUTH_JSON`: unset that env var first, or the command exits with an error (it does not silently fall back to the env auth).
 
 **Options:**
-- `--include-domains LABEL[,LABEL...]` - Opt in to persisting sibling-product cookies (default: required Google auth/Drive/NotebookLM domains only). Same labels as `login`: `youtube`, `docs`, `myaccount`, `mail`, `all`.
+- `--include-domains LABEL` (repeatable) - Opt in to persisting sibling-product cookies (default: required Google auth/Drive/NotebookLM domains only). Pass labels comma-separated or repeat the flag (e.g. `--include-domains youtube,docs` or `--include-domains youtube --include-domains docs`). Same labels as `login`: `youtube`, `docs`, `myaccount`, `mail`, `all`.
 - `--include-optional` - Persist all optional sibling-product cookie domains.
 - `--json` - Emit a JSON result (`storage_path`, `cookie_count`, `backup_path`).
 - `--quiet` - Suppress success output.

@@ -288,6 +288,9 @@ class TestAuthImportCookiesCommand:
         assert json.loads(backup_path.read_text(encoding="utf-8"))["cookies"] == []
         assert json.loads(storage_path.read_text(encoding="utf-8"))["cookies"]
         assert "backed up to" in result.output
+        if sys.platform != "win32":
+            # The .bak holds credentials too — it must be private (0o600).
+            assert stat.S_IMODE(backup_path.stat().st_mode) == 0o600
 
     def test_import_cookies_no_backup_when_target_absent(self, runner, tmp_path):
         input_path = tmp_path / "cookies.json"
@@ -378,6 +381,36 @@ class TestAuthImportCookiesCommand:
 
         assert result.exit_code == 0, result.output
         assert storage_path.exists()
+
+    def test_import_cookies_rejects_non_object_cookie_entry(self, runner, tmp_path):
+        # A bare list containing a non-object element must fail cleanly at the
+        # normalization boundary, not crash in the downstream extractor.
+        input_path = tmp_path / "cookies.json"
+        storage_path = tmp_path / "storage_state.json"
+        input_path.write_text(json.dumps([*_valid_cookie_export(), "not-an-object"]), "utf-8")
+
+        result = runner.invoke(
+            cli, ["--storage", str(storage_path), "auth", "import-cookies", str(input_path)]
+        )
+
+        assert result.exit_code != 0
+        assert "must be a JSON object" in result.output
+        assert not storage_path.exists()
+
+    def test_import_cookies_json_error_output_is_json(self, runner, tmp_path):
+        # The handle_errors(json_output=...) fix: a failure under --json must
+        # render the JSON error envelope, not plain text.
+        input_path = tmp_path / "bad.json"
+        storage_path = tmp_path / "storage_state.json"
+        input_path.write_text("not valid json", encoding="utf-8")
+
+        result = runner.invoke(
+            cli,
+            ["--storage", str(storage_path), "auth", "import-cookies", str(input_path), "--json"],
+        )
+
+        assert result.exit_code != 0
+        assert json.loads(result.output)["error"] is True  # parses as JSON
 
 
 class TestAuthCheckCommand:
