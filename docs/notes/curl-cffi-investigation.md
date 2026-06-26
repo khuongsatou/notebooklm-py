@@ -282,3 +282,7 @@ upload) + hermetic suite (8 tests).
   still streams. Documented at `_materialize`; no arbitrary cap added (would risk rejecting valid
   uploads). Only genuinely open item now: nothing blocking — the transport is feature-complete for
   the authenticated API surface.
+
+**Config:** `NOTEBOOKLM_TRANSPORT=curl_cffi` enables the transport; `NOTEBOOKLM_IMPERSONATE`
+overrides the impersonation target (default `chrome`; any curl_cffi target, e.g. `safari`,
+`chrome131`). Both documented in `docs/installation.md`'s extras matrix.

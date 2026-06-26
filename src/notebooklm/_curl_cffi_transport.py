@@ -19,6 +19,7 @@ auto-decompress — verify against real gzip'd RPC before production).
 
 from __future__ import annotations
 
+import io
 import os
 from typing import TYPE_CHECKING, Any
 
@@ -44,7 +45,9 @@ def _to_curl_timeout(timeout: Any) -> float | tuple[float, float] | None:
     libcurl, so those fold into the total — preserving the two slots curl can act
     on (connect + read) instead of collapsing everything to one window.
     """
-    if timeout is None or isinstance(timeout, (int, float)):
+    # ``bool`` is an ``int`` subclass — exclude it so a stray ``True``/``False``
+    # isn't silently treated as a 1s/0s timeout.
+    if timeout is None or (isinstance(timeout, (int, float)) and not isinstance(timeout, bool)):
         return timeout
     connect = getattr(timeout, "connect", None)
     read = getattr(timeout, "read", None)
@@ -70,6 +73,8 @@ async def _materialize(content: Any) -> bytes | None:
         return bytes(content) if content is not None else None
     if isinstance(content, str):
         return content.encode()
+    if isinstance(content, io.IOBase):  # e.g. BytesIO — read it out
+        return content.read()
     buf = bytearray()
     if hasattr(content, "__aiter__"):
         async for chunk in content:
@@ -79,7 +84,9 @@ async def _materialize(content: Any) -> bytes | None:
         for chunk in content:
             buf.extend(chunk)
         return bytes(buf)
-    return content
+    # Explicit contract: an unsupported body type would otherwise reach curl_cffi
+    # and surface as a cryptic error. Fail clearly instead.
+    raise TypeError(f"_materialize: unsupported content type {type(content).__name__!r}")
 
 
 class _StreamedResponse:
@@ -123,10 +130,16 @@ class _StreamCtx:
     async def __aenter__(self) -> _StreamedResponse:
         from curl_cffi.requests import RequestsError
 
+        self._cm = self._client._curl.stream(self._method, self._url, **self._kwargs)
         try:
-            self._cm = self._client._curl.stream(self._method, self._url, **self._kwargs)
             curl_resp = await self._cm.__aenter__()
         except RequestsError as exc:  # transport failure -> httpx.RequestError for the mapper
+            # __aexit__ is NOT auto-called when __aenter__ raises, so close the
+            # curl stream handle ourselves before re-raising.
+            try:
+                await self._cm.__aexit__(type(exc), exc, exc.__traceback__)
+            except Exception:  # noqa: BLE001 — cleanup must not mask the original error
+                pass
             raise httpx.RequestError(
                 str(exc), request=httpx.Request(self._method, self._url)
             ) from exc
@@ -248,7 +261,8 @@ class CurlCffiAsyncClient:
             status_code=r.status_code,
             headers=_strip(r.headers),
             content=r.content,
-            request=httpx.Request("POST", url),
+            # Use the final (post-redirect) URL, consistent with ``get()``.
+            request=httpx.Request("POST", r.url),
         )
 
     def stream(self, method: str, url: str, **kwargs: Any) -> _StreamCtx:
@@ -257,6 +271,9 @@ class CurlCffiAsyncClient:
             "timeout": self._timeout_for(kwargs),
         }
         # Map httpx's stream kwargs onto curl_cffi's: body content + headers.
+        # NOTE: ``content`` must be bytes here — curl_cffi's stream ``data=`` can't
+        # consume a (async) generator. A streamed body goes through ``post()``
+        # (which buffers via ``_materialize``); the kernel's RPC stream is bytes.
         if "content" in kwargs:
             stream_kwargs["data"] = kwargs.pop("content")
         if kwargs.get("headers"):
