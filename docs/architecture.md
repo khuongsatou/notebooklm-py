@@ -1019,6 +1019,7 @@ src/notebooklm/
 ├── _request_types.py            # AuthSnapshot, BuildRequest, PostBody, request materialization helpers
 ├── _transport_errors.py         # Transport exceptions, Retry-After parsing, Kernel.post error mapping
 ├── _streaming_post.py           # Size-capped streaming POST helper
+├── _curl_cffi_transport.py      # Opt-in curl_cffi browser-impersonation transport (NOTEBOOKLM_TRANSPORT=curl_cffi)
 ├── _rpc_executor.py             # RPC dispatch executor
 ├── _client_metrics.py           # Telemetry / metrics seam
 ├── _transport_drain.py          # In-flight transport drain coordinator

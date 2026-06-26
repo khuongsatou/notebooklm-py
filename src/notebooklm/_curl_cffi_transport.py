@@ -124,7 +124,7 @@ class _StreamCtx:
         from curl_cffi.requests import RequestsError
 
         try:
-            self._cm = self._client._session.stream(self._method, self._url, **self._kwargs)
+            self._cm = self._client._curl.stream(self._method, self._url, **self._kwargs)
             curl_resp = await self._cm.__aenter__()
         except RequestsError as exc:  # transport failure -> httpx.RequestError for the mapper
             raise httpx.RequestError(
@@ -163,7 +163,7 @@ class CurlCffiAsyncClient:
         self.cookies = httpx.Cookies(cookies)
         self._follow_redirects = follow_redirects
         self._timeout = _to_curl_timeout(timeout)
-        self._session: Any = AsyncSession(
+        self._curl: Any = AsyncSession(
             headers=dict(headers) if headers else None,
             cookies=self.cookies.jar,
             impersonate=impersonate
@@ -172,7 +172,7 @@ class CurlCffiAsyncClient:
 
     def _sync_cookies_back(self) -> None:
         """Merge server Set-Cookie (rotated PSIDTS etc.) back into the httpx jar."""
-        for cookie in self._session.cookies.jar:
+        for cookie in self._curl.cookies.jar:
             self.cookies.jar.set_cookie(cookie)
 
     def _redirects(self, kwargs: dict[str, Any]) -> bool:
@@ -194,7 +194,7 @@ class CurlCffiAsyncClient:
         allow_redirects = self._redirects(kwargs)
         timeout = self._timeout_for(kwargs)
         try:
-            r = await self._session.get(
+            r = await self._curl.get(
                 url,
                 allow_redirects=allow_redirects,
                 timeout=timeout,
@@ -226,7 +226,7 @@ class CurlCffiAsyncClient:
         allow_redirects = self._redirects(kwargs)
         timeout = self._timeout_for(kwargs)
         try:
-            r = await self._session.post(
+            r = await self._curl.post(
                 url,
                 headers=dict(headers) if headers else None,
                 data=body,
@@ -260,7 +260,7 @@ class CurlCffiAsyncClient:
         return _StreamCtx(self, method, url, stream_kwargs)
 
     async def aclose(self) -> None:
-        await self._session.close()
+        await self._curl.close()
 
     async def __aenter__(self) -> CurlCffiAsyncClient:
         return self
@@ -278,13 +278,16 @@ def make_curl_cffi_factory(impersonate: str | None = None) -> Any:
     return factory
 
 
-def resolve_transport_factory(default: Any = httpx.AsyncClient) -> Any:
+def resolve_transport_factory() -> Any:
     """Pick the HTTP client factory for the current transport opt-in.
 
     The single source of truth for ``NOTEBOOKLM_TRANSPORT=curl_cffi``: returns the
-    curl_cffi factory when set, else ``default``. Used by every authenticated-Google
-    client site (main RPC kernel, upload, account, refresh) so the whole API surface
-    shares ONE TLS fingerprint.
+    curl_cffi factory when set, else ``httpx.AsyncClient``. Used by every
+    authenticated-Google client site (main RPC kernel, upload, account, refresh) so
+    the whole API surface shares ONE TLS fingerprint.
+
+    ``httpx.AsyncClient`` is resolved at CALL time (not bound as a default arg) so
+    tests that ``patch("httpx.AsyncClient")`` still intercept the opt-out path.
 
     NOTE: importing this module does not import curl_cffi — that happens lazily only
     when the returned factory is actually called, so the opt-out path stays pure-httpx
@@ -299,4 +302,4 @@ def resolve_transport_factory(default: Any = httpx.AsyncClient) -> Any:
     """
     if os.environ.get("NOTEBOOKLM_TRANSPORT") == "curl_cffi":
         return make_curl_cffi_factory()
-    return default
+    return httpx.AsyncClient
