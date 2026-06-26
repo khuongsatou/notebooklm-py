@@ -60,8 +60,11 @@ def _strip(headers: Mapping[str, str]) -> dict[str, str]:
 async def _materialize(content: Any) -> bytes | None:
     """Collapse an httpx-style request body (bytes / sync- or async-iterable) to bytes.
 
-    ponytail: buffers the whole body — fine for the PoC's small test files; a
-    production version would stream into curl_cffi's upload API instead.
+    curl_cffi's async ``data=`` accepts only ``bytes``/``str``/``BytesIO``/``dict``
+    — never a (async) generator — so a streamed upload body must be buffered here.
+    This is a curl_cffi API limitation, not a buffer we can stream around; it is
+    bounded by NotebookLM's per-source upload size limit. For very large uploads,
+    prefer the default httpx transport (which streams the body).
     """
     if content is None or isinstance(content, (bytes, bytearray)):
         return bytes(content) if content is not None else None

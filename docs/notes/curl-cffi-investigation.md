@@ -266,5 +266,19 @@ Closed the two follow-ups from §9:
 
 Polished (code-simplifier → Claude + Codex review → ultrathink): the one Important finding (timeout
 sentinel) and the cookie-copy/test-mark suggestions were applied; re-verified live (`auth check`,
-upload) + hermetic suite (8 tests). Remaining: native-wheel CI matrix; streaming-upload buffering
-(`_materialize` reads the whole body — fine for tested sizes).
+upload) + hermetic suite (8 tests).
+
+## 11. Closing the last two gaps (2026-06-26)
+
+- **Native-wheel CI matrix.** Added a dedicated `impersonate` job to `.github/workflows/test.yml`
+  (ubuntu/macos/windows, mirroring the `mcp`/`server` jobs) that installs `--extra impersonate` and
+  runs the curl_cffi hermetic suite — proving the native wheels resolve on every OS and the adapter
+  behaves cross-platform. (The canonical install omits the extra, so the suite is otherwise skipped
+  via `importorskip`.)
+- **Streaming-upload buffering — won't-fix, by design.** curl_cffi's async `data=` accepts only
+  `bytes`/`str`/`BytesIO`/`dict`, never a generator, so a streamed upload body *must* be buffered for
+  the impersonate transport. This is a curl_cffi API limitation, not a client buffer we can stream
+  around; it is bounded by NotebookLM's per-source upload size limit, and the default httpx transport
+  still streams. Documented at `_materialize`; no arbitrary cap added (would risk rejecting valid
+  uploads). Only genuinely open item now: nothing blocking — the transport is feature-complete for
+  the authenticated API surface.
