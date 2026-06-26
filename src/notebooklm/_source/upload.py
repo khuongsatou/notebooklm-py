@@ -287,7 +287,16 @@ class SourceUploadPipeline(LoopBoundPrimitive):
         return self._upload_timeout if self._upload_timeout is not None else default
 
     def _client_factory(self) -> AsyncClientFactory:
-        return self._async_client_factory or httpx.AsyncClient
+        if self._async_client_factory is not None:
+            return self._async_client_factory
+        # PoC: keep the upload leg on the SAME transport as the main session.
+        # The /upload/ endpoint 500s on a curl_cffi session + httpx upload mix
+        # (fingerprint/session correlation); route it through curl_cffi too.
+        if os.environ.get("NOTEBOOKLM_TRANSPORT") == "curl_cffi":
+            from .._curl_cffi_transport import make_curl_cffi_factory
+
+            return make_curl_cffi_factory()
+        return httpx.AsyncClient
 
     def _authuser_query(self) -> str:
         return authuser_query(self._auth.authuser, self._auth.account_email)
