@@ -163,11 +163,16 @@ class CurlCffiAsyncClient:
         self.cookies = httpx.Cookies(cookies)
         self._follow_redirects = follow_redirects
         self._timeout = _to_curl_timeout(timeout)
+        # ``Any`` so it satisfies curl_cffi's ``impersonate: Literal[...]`` param
+        # whether or not curl_cffi's stubs are installed — avoids a `type: ignore`
+        # that mypy flags as unused in the (no-impersonate-extra) CI type-check.
+        impersonate_value: Any = impersonate or os.environ.get(
+            "NOTEBOOKLM_IMPERSONATE", DEFAULT_IMPERSONATE
+        )
         self._curl: Any = AsyncSession(
             headers=dict(headers) if headers else None,
             cookies=self.cookies.jar,
-            impersonate=impersonate
-            or os.environ.get("NOTEBOOKLM_IMPERSONATE", DEFAULT_IMPERSONATE),  # type: ignore[arg-type]
+            impersonate=impersonate_value,
         )
 
     def _sync_cookies_back(self) -> None:
