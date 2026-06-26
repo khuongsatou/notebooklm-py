@@ -46,6 +46,11 @@ class _Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b"kaboom")
             return
+        if self.path == "/redirect":
+            self.send_response(302)
+            self.send_header("Location", "/")
+            self.end_headers()
+            return
         body = f"token=ABC123 cookie_seen={self._seen_cookie()}".encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/html")
@@ -79,7 +84,11 @@ def server():
     try:
         yield f"http://{host}:{port}"
     finally:
+        # Fully tear down: stop the loop, join the thread, close the socket —
+        # otherwise handles/threads leak across the per-test servers (flaky on Windows).
         httpd.shutdown()
+        thread.join(timeout=5)
+        httpd.server_close()
 
 
 async def test_get_returns_httpx_response_and_round_trips_cookies(server):
@@ -142,20 +151,91 @@ def test_to_curl_timeout_preserves_connect_and_read():
     assert _to_curl_timeout(httpx.Timeout(None, read=45.0)) == 45.0
 
 
-async def test_get_accepts_per_request_redirects_and_timeout_and_raw_jar(server):
-    """Secondary auth clients pass a raw CookieJar + per-request follow_redirects/timeout."""
+async def test_get_follows_real_redirect_with_per_request_kwargs_and_raw_jar(server):
+    """Secondary auth clients pass a raw CookieJar + per-request follow_redirects/timeout.
+
+    Hits a real 302 so a broken ``_redirects()`` translation (httpx
+    ``follow_redirects`` -> curl ``allow_redirects``) actually fails the test.
+    """
     from http.cookiejar import CookieJar
 
     client = CurlCffiAsyncClient(cookies=CookieJar())  # raw jar, not httpx.Cookies
     try:
         r = await client.get(
-            f"{server}/", follow_redirects=True, timeout=httpx.Timeout(5.0, read=10.0)
+            f"{server}/redirect", follow_redirects=True, timeout=httpx.Timeout(5.0, read=10.0)
         )
-        assert r.status_code == 200
+        assert r.status_code == 200  # followed 302 -> / (200), not the raw redirect
+        assert "token=ABC123" in r.text  # body of the final page
+        assert str(r.url).endswith("/")  # final URL after the hop
         assert isinstance(client.cookies, httpx.Cookies)
         assert client.cookies.get("ROTATED") == "newval"
     finally:
         await client.aclose()
+
+
+async def test_post_returns_httpx_response_and_echoes_body(server):
+    """`.post()` buffers the body, returns an httpx.Response, preserves headers."""
+    client = CurlCffiAsyncClient(cookies=httpx.Cookies())
+    try:
+        r = await client.post(f"{server}/rpc", headers={"X-T": "1"}, content=b"hello")
+        assert isinstance(r, httpx.Response)
+        assert r.status_code == 200
+        assert r.content == b"echo:hello"
+    finally:
+        await client.aclose()
+
+
+async def test_transport_error_maps_to_httpx_request_error():
+    """A connection failure surfaces as httpx.RequestError (what the mapper expects)."""
+    # 127.0.0.1:1 is almost certainly closed -> curl_cffi RequestsError -> httpx.RequestError.
+    client = CurlCffiAsyncClient(cookies=httpx.Cookies(), timeout=2.0)
+    try:
+        with pytest.raises(httpx.RequestError):
+            await client.get("http://127.0.0.1:1/")
+        with pytest.raises(httpx.RequestError):
+            await client.post("http://127.0.0.1:1/", content=b"x")
+    finally:
+        await client.aclose()
+
+
+async def test_materialize_body_types():
+    """_materialize handles bytes/str/None/async-iter/sync-iter/BytesIO and rejects the rest."""
+    import io
+
+    from notebooklm._curl_cffi_transport import _materialize
+
+    async def agen():
+        yield b"ab"
+        yield b"cd"
+
+    assert await _materialize(b"x") == b"x"
+    assert await _materialize(None) is None
+    assert await _materialize("hi") == b"hi"
+    assert await _materialize(agen()) == b"abcd"
+    assert await _materialize([b"a", b"b"]) == b"ab"
+    assert await _materialize(io.BytesIO(b"zz")) == b"zz"
+    with pytest.raises(TypeError):
+        await _materialize(12345)
+
+
+async def test_resolve_transport_factory_curl_and_unknown(monkeypatch):
+    """resolve_transport_factory: curl_cffi when opted in, httpx default, raise on typo."""
+    from notebooklm._curl_cffi_transport import resolve_transport_factory
+
+    monkeypatch.delenv("NOTEBOOKLM_TRANSPORT", raising=False)
+    assert resolve_transport_factory() is httpx.AsyncClient
+
+    monkeypatch.setenv("NOTEBOOKLM_TRANSPORT", "curl_cffi")
+    factory = resolve_transport_factory()
+    inst = factory(cookies=httpx.Cookies())
+    try:
+        assert isinstance(inst, CurlCffiAsyncClient)
+    finally:
+        await inst.aclose()
+
+    monkeypatch.setenv("NOTEBOOKLM_TRANSPORT", "curlcffi")  # typo
+    with pytest.raises(ValueError, match="Unknown NOTEBOOKLM_TRANSPORT"):
+        resolve_transport_factory()
 
 
 async def test_timeout_for_honors_explicit_falsy_and_defaults_when_absent():

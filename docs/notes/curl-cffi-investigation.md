@@ -182,7 +182,7 @@ The throwaway PoC from §7 is implemented on this branch and verified.
 **Files:**
 - `src/notebooklm/_curl_cffi_transport.py` — `CurlCffiAsyncClient` adapter (~180 lines).
 - `src/notebooklm/_runtime/init.py` — env-gated factory selection in `_resolve_async_client_factory`.
-- `pyproject.toml` — optional `[impersonate]` extra (`curl_cffi>=0.7,<1`), excluded from `all`.
+- `pyproject.toml` — optional `[impersonate]` extra (`curl_cffi>=0.11,<1`), excluded from `all`.
 - `tests/unit/test_curl_cffi_transport_poc.py` — hermetic proof (4 tests, `importorskip`).
 
 **Proven (4/4 hermetic tests, local stdlib server):**

@@ -30,6 +30,8 @@ if TYPE_CHECKING:
     from http.cookiejar import CookieJar
 
 DEFAULT_IMPERSONATE = "chrome"
+# Recognized values for NOTEBOOKLM_TRANSPORT; anything else (non-empty) is a typo.
+_KNOWN_TRANSPORTS = frozenset({"curl_cffi", "httpx"})
 
 # Headers that must not survive onto a Response rebuilt from already-decoded
 # bytes — same rationale as ``_streaming_post._STRIP_HEADERS_ON_REBUFFER``.
@@ -321,7 +323,17 @@ def resolve_transport_factory() -> Any:
     SSRF revalidation, which curl_cffi's internal redirect handling can't replicate
     without disabling redirects. Fingerprint cosmetics there aren't worth dropping the
     SSRF guard.
+
+    A non-empty ``NOTEBOOKLM_TRANSPORT`` that isn't a known transport raises, so a
+    typo (e.g. ``curlcffi``) fails loudly instead of silently using httpx while the
+    operator believes impersonation is on.
     """
-    if os.environ.get("NOTEBOOKLM_TRANSPORT") == "curl_cffi":
+    transport = os.environ.get("NOTEBOOKLM_TRANSPORT", "").strip()
+    if transport == "curl_cffi":
         return make_curl_cffi_factory()
+    if transport and transport not in _KNOWN_TRANSPORTS:
+        raise ValueError(
+            f"Unknown NOTEBOOKLM_TRANSPORT={transport!r}; "
+            f"expected one of {sorted(_KNOWN_TRANSPORTS)} or unset."
+        )
     return httpx.AsyncClient
