@@ -116,12 +116,14 @@ def notebooklm_unavailable_location(url: str) -> str | None:
         values = parse_qs(urlparse(url).query).get("location")
     except (AttributeError, TypeError, ValueError):
         return None
-    # ``next(iter(...))`` rather than ``values[0]`` — the parse-qs list is not an
-    # RPC row, but the positional-indexing guardrail can't tell, and the first
-    # value is all we want anyway.
-    raw = next(iter(values or ()), "")
+    if not values:
+        return None
+    # Sequence unpacking (not ``values[0]``) — the parse-qs list isn't an RPC row,
+    # but the positional-indexing guardrail can't tell; the guard above keeps the
+    # unpack safe.
+    first, *_ = values
     # The value lands in a user-facing error string, so keep only a bounded,
     # sane diagnostic token (e.g. ``unsupported``) — never echo arbitrary,
     # newline-bearing, or URL-shaped query content.
-    sanitized = re.sub(r"[^A-Za-z0-9_-]", "", raw)[:64]
+    sanitized = re.sub(r"[^A-Za-z0-9_-]", "", first)[:64]
     return sanitized or None

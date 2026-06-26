@@ -184,6 +184,12 @@ class TestUrlParsingExceptionPaths:
         text = f"redirecting to {self.MALFORMED_IPV6} signin"
         assert contains_google_auth_redirect(text) is False
 
+    def test_is_notebooklm_unavailable_redirect_swallows_parse_error(self):
+        assert is_notebooklm_unavailable_redirect(self.MALFORMED_IPV6) is False
+
+    def test_notebooklm_unavailable_location_swallows_parse_error(self):
+        assert notebooklm_unavailable_location(self.MALFORMED_IPV6) is None
+
 
 class TestIsNotebookLMUnavailableRedirect:
     """Tests for is_notebooklm_unavailable_redirect() — the region/anti-abuse gate (#1630)."""
@@ -239,3 +245,16 @@ class TestNotebookLMUnavailableLocation:
     )
     def test_no_location_returns_none(self, url: str):
         assert notebooklm_unavailable_location(url) is None
+
+    def test_sanitizes_injected_value(self):
+        # The value lands in a user-facing error string: control chars / spaces /
+        # URL-shaped content are stripped, and the result is length-bounded.
+        assert (
+            notebooklm_unavailable_location(
+                "https://notebooklm.google/?location=un%0Asupported%20hi"
+            )
+            == "unsupportedhi"
+        )
+        assert notebooklm_unavailable_location("https://notebooklm.google/?location=%0A%20") is None
+        long = notebooklm_unavailable_location("https://notebooklm.google/?location=" + "a" * 200)
+        assert long is not None and len(long) == 64
