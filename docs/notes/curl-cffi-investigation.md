@@ -248,7 +248,23 @@ the same account — two processes rotating PSIDTS in the shared `storage_state.
 other's CSRF token → a `CREATE_NOTEBOOK HTTP 401` storm (36 failed / 59 errored, all bogus). Run e2e
 strictly serially, sole-access.
 
-**Still NOT migrated to curl_cffi (work as-is on httpx, didn't block e2e):** the 3 other secondary
-`httpx.AsyncClient` sites — `_artifact/downloads.py`, `_auth/account.py`, `_auth/refresh.py`.
-Downloads passed under the mixed transport; only the upload endpoint was strict. Migrate them too
-for full fingerprint consistency before any production rollout.
+## 10. Fingerprint consistency + timeout fidelity (2026-06-26)
+
+Closed the two follow-ups from §9:
+
+- **Full fingerprint consistency.** Added a shared `resolve_transport_factory()` (single source of
+  truth for the env opt-in) now used by every authenticated-Google client — main RPC kernel, upload,
+  `_auth/account.py`, `_auth/refresh.py` — so the whole API surface shares one TLS fingerprint.
+  `_artifact/downloads.py` is the deliberate exception: it stays on httpx for the #1521 redirect-host
+  SSRF event-hook (which curl_cffi's internal redirect handling can't replicate) and targets a CDN
+  host, not the authenticated surface. The adapter gained per-request `follow_redirects`/`timeout`
+  kwarg translation and raw-`CookieJar` acceptance so the secondary clients work verbatim; cookies are
+  now **copied** (matching `httpx.AsyncClient`) so a caller's jar isn't mutated.
+- **4-slot timeout fidelity.** `_to_curl_timeout` maps `httpx.Timeout` → curl_cffi's `(connect, read)`
+  tuple (write/pool have no libcurl equivalent, so they fold into the total) instead of collapsing to
+  a single window. A sentinel in `_timeout_for` preserves an explicit `timeout=0`/`None`.
+
+Polished (code-simplifier → Claude + Codex review → ultrathink): the one Important finding (timeout
+sentinel) and the cookie-copy/test-mark suggestions were applied; re-verified live (`auth check`,
+upload) + hermetic suite (8 tests). Remaining: native-wheel CI matrix; streaming-upload buffering
+(`_materialize` reads the whole body — fine for tested sizes).

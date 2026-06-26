@@ -22,7 +22,6 @@ injection seams.
 from __future__ import annotations
 
 import logging
-import os
 from collections.abc import Awaitable, Callable
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
@@ -140,13 +139,11 @@ def _resolve_async_client_factory(
     """Resolve the construction-only async-client seam."""
     if async_client_factory is not None:
         return async_client_factory
-    # PoC opt-in: browser TLS/JA3 impersonation transport (curl_cffi).
-    # See docs/notes/curl-cffi-investigation.md.
-    if os.environ.get("NOTEBOOKLM_TRANSPORT") == "curl_cffi":
-        from .._curl_cffi_transport import make_curl_cffi_factory
+    # PoC opt-in: browser TLS/JA3 impersonation transport (curl_cffi), shared
+    # across every authenticated-Google client. See docs/notes/curl-cffi-investigation.md.
+    from .._curl_cffi_transport import resolve_transport_factory
 
-        return make_curl_cffi_factory()
-    return httpx.AsyncClient
+    return resolve_transport_factory()
 
 
 def validate_constructor_args(
