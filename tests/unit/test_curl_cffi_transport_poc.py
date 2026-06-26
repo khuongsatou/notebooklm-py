@@ -187,13 +187,20 @@ async def test_post_returns_httpx_response_and_echoes_body(server):
 
 async def test_transport_error_maps_to_httpx_request_error():
     """A connection failure surfaces as httpx.RequestError (what the mapper expects)."""
-    # 127.0.0.1:1 is almost certainly closed -> curl_cffi RequestsError -> httpx.RequestError.
+    import socket
+
+    # Reserve an ephemeral port then release it, so it's reliably closed (port 1 is
+    # only usually-closed and would make this flaky across the OS matrix).
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    base = f"http://127.0.0.1:{s.getsockname()[1]}"
+    s.close()
     client = CurlCffiAsyncClient(cookies=httpx.Cookies(), timeout=2.0)
     try:
         with pytest.raises(httpx.RequestError):
-            await client.get("http://127.0.0.1:1/")
+            await client.get(f"{base}/")
         with pytest.raises(httpx.RequestError):
-            await client.post("http://127.0.0.1:1/", content=b"x")
+            await client.post(f"{base}/", content=b"x")
     finally:
         await client.aclose()
 
