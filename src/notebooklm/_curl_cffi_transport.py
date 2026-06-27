@@ -25,13 +25,17 @@ import asyncio
 import io
 import os
 from typing import TYPE_CHECKING, Any, cast
+from urllib.parse import urljoin, urlparse
 
 import httpx
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Mapping
+    from collections.abc import AsyncIterator, Callable, Mapping
     from http.cookiejar import CookieJar
     from typing import IO
+
+# HTTP status codes that carry a ``Location`` we must re-validate before following.
+_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 
 DEFAULT_IMPERSONATE = "chrome"
 # Recognized values for NOTEBOOKLM_TRANSPORT; anything else (non-empty) is a typo.
@@ -239,6 +243,75 @@ class CurlCffiAsyncClient:
             headers=_strip(r.headers),
             content=r.content,
             request=httpx.Request("GET", r.url),
+        )
+
+    async def get_guarded(
+        self,
+        url: str,
+        *,
+        is_trusted_host: Callable[[str | None], bool],
+        max_redirects: int = 10,
+        **kwargs: Any,
+    ) -> httpx.Response:
+        """GET that follows redirects MANUALLY, re-validating every hop's host.
+
+        The curl_cffi/libcurl equivalent of the httpx #1521 redirect-revalidation
+        event hook: libcurl's *internal* auto-follow loop can't host a per-hop
+        Python policy callback, so we disable it (``allow_redirects=False``) and
+        follow ``Location`` ourselves, checking each hop's scheme + host against
+        ``is_trusted_host`` *before* connecting.
+
+        SECURITY — this is an SSRF boundary, so two things are deliberate:
+
+        * We validate the **raw** URL host (via ``urlparse``), never curl_cffi's
+          ``requote_uri``'d form. ``requote_uri`` un-escapes ``%2e`` to ``.``
+          (``.`` is "unreserved"), so ``evil%2egoogleapis.com`` would otherwise
+          decode to a trusted-looking ``evil.googleapis.com`` *after* the check.
+          ``is_trusted_host`` already rejects any host containing ``%`` / ``/`` /
+          ``\\`` (#1521); we keep that gate ahead of the request.
+        * We pass ``quote=False`` so curl_cffi hands libcurl the exact URL we
+          validated — otherwise it would rewrite the host before connecting and
+          the host we checked would not be the host libcurl dials.
+
+        Next-hop targets come from the raw ``Location`` header (not curl_cffi's
+        decoded ``redirect_url``), resolved against the current URL.
+        """
+        from curl_cffi.requests import RequestsError
+
+        timeout = self._timeout_for(kwargs)
+        current = url
+        for _ in range(max_redirects + 1):
+            parsed = urlparse(current)
+            if parsed.scheme != "https" or not is_trusted_host(parsed.hostname):
+                raise httpx.RequestError(
+                    f"untrusted or non-HTTPS download hop: {parsed.hostname or '<unknown>'}",
+                    request=httpx.Request("GET", current),
+                )
+            try:
+                r = await self._curl.get(
+                    current,
+                    allow_redirects=False,
+                    quote=False,
+                    timeout=timeout,
+                    **kwargs,
+                )
+            except RequestsError as exc:
+                raise httpx.RequestError(str(exc), request=httpx.Request("GET", current)) from exc
+            self._sync_cookies_back()
+            if r.status_code in _REDIRECT_STATUSES:
+                location = r.headers.get("location")
+                if not location:
+                    break  # redirect status without a target — surface as-is
+                current = urljoin(current, location)
+                continue
+            return httpx.Response(
+                status_code=r.status_code,
+                headers=_strip(r.headers),
+                content=r.content,
+                request=httpx.Request("GET", r.url),
+            )
+        raise httpx.RequestError(
+            f"exceeded {max_redirects} redirects", request=httpx.Request("GET", url)
         )
 
     async def post(

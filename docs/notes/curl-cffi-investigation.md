@@ -155,8 +155,9 @@ working. This is the fiddliest part and the #1 thing the PoC must prove.
    platforms; verify CI matrix + that it stays an **optional extra** so the base install is pure-Python.
 5. **Timeout semantics.** httpx's 4-slot `Timeout` (connect/read/write/pool) vs curl_cffi's
    simpler model — the per-request read-timeout widening in `Kernel.post` needs an equivalent.
-6. **`follow_redirects` + redirect revalidation.** Downloads use `event_hooks` for host
-   revalidation (#1521); not needed for cut 1 (downloads keep httpx), but note if extended.
+6. **`follow_redirects` + redirect revalidation.** Downloads use httpx `event_hooks` for per-hop host
+   revalidation (#1521). The curl path replicates it via `get_guarded` (manual `allow_redirects=False`
+   loop, raw-host validation, `quote=False`) — see "Full fingerprint consistency" below.
 
 ## 7. Recommendation
 
@@ -252,14 +253,24 @@ strictly serially, sole-access.
 
 Closed the two follow-ups from §9:
 
-- **Full fingerprint consistency.** Added a shared `resolve_transport_factory()` (single source of
-  truth for the env opt-in) now used by every authenticated-Google client — main RPC kernel, upload,
-  `_auth/account.py`, `_auth/refresh.py` — so the whole API surface shares one TLS fingerprint.
-  `_artifact/downloads.py` is the deliberate exception: it stays on httpx for the #1521 redirect-host
-  SSRF event-hook (which curl_cffi's internal redirect handling can't replicate) and targets a CDN
-  host, not the authenticated surface. The adapter gained per-request `follow_redirects`/`timeout`
-  kwarg translation and raw-`CookieJar` acceptance so the secondary clients work verbatim; cookies are
-  now **copied** (matching `httpx.AsyncClient`) so a caller's jar isn't mutated.
+- **Full fingerprint consistency (downloads included).** Added a shared `resolve_transport_factory()`
+  (single source of truth for the env opt-in) now used by every authenticated-Google client — main RPC
+  kernel, upload, `_auth/account.py`, `_auth/refresh.py`, and `_artifact/downloads.py` — so the whole
+  API surface shares one TLS fingerprint, including the download's cookie-bearing first hop.
+  - **Download redirect guard.** The #1521 per-hop trusted-host SSRF guard is an httpx `request`
+    event-hook; libcurl's *internal* auto-follow loop can't host a per-hop Python callback, so the
+    curl_cffi path replicates the *behavior* (not the mechanism) via `CurlCffiAsyncClient.get_guarded`:
+    `allow_redirects=False` + a manual loop that re-checks each hop's scheme + host against the same
+    `_is_trusted_download_host` predicate before connecting. Two SSRF-critical details: it validates the
+    **raw** URL host (curl_cffi's `requote_uri` un-escapes `%2e`→`.`, so `evil%2egoogleapis.com` would
+    otherwise decode to a trusted-looking host *after* the check) and passes **`quote=False`** so
+    libcurl dials exactly the URL we validated. (Earlier drafts wrongly said curl "can't replicate" the
+    guard — it can; it just can't reuse the event-hook mechanism. Reviewed by Codex + Claude.) The curl
+    download path **buffers** rather than streams (acceptable for the opt-in transport, which already
+    buffers RPC/upload bodies); the default httpx path keeps streaming.
+  - The adapter gained per-request `follow_redirects`/`timeout` kwarg translation and raw-`CookieJar`
+    acceptance so the secondary clients work verbatim; cookies are now **copied** (matching
+    `httpx.AsyncClient`) so a caller's jar isn't mutated.
 - **4-slot timeout fidelity.** `_to_curl_timeout` maps `httpx.Timeout` → curl_cffi's `(connect, read)`
   tuple (write/pool have no libcurl equivalent, so they fold into the total) instead of collapsing to
   a single window. A sentinel in `_timeout_for` preserves an explicit `timeout=0`/`None`.

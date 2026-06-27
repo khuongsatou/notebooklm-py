@@ -172,8 +172,9 @@ async def test_gzip_recorded_body_decodes_identically(name, body):
 @pytest.mark.parametrize("name,body", _BODIES[:1], ids=[n for n, _ in _BODIES[:1]])
 async def test_get_download_decodes_identically(name, body):
     """Download (GET) path: a real gzip'd body fetched via curl_cffi.get() decodes
-    identically to httpx. (Artifact downloads themselves deliberately stay on httpx
-    for the #1521 SSRF host-allowlist hook; this covers the transport's GET primitive.)"""
+    identically to httpx. (Artifact downloads route through the active transport
+    via get_guarded — see test_curl_cffi_redirect_guard.py for the #1521 SSRF
+    coverage; this covers the plain GET decode primitive.)"""
     _GzipHandler.payload = body
     with _local_server(_GzipHandler) as url:
         curl = CurlCffiAsyncClient(cookies=httpx.Cookies())
