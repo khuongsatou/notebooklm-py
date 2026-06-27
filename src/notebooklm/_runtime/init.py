@@ -140,7 +140,7 @@ def _resolve_async_client_factory(
     if async_client_factory is not None:
         return async_client_factory
     # PoC opt-in: browser TLS/JA3 impersonation transport (curl_cffi), shared
-    # across every authenticated-Google client. See docs/notes/curl-cffi-investigation.md.
+    # across every authenticated-Google client.
     from .._curl_cffi_transport import resolve_transport_factory
 
     return resolve_transport_factory()

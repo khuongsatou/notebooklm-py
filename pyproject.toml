@@ -44,8 +44,8 @@ markdown = ["markdownify>=0.14.1,<2"]
 browser = ["playwright>=1.40.0,<2"]
 cookies = ["rookiepy>=0.1.0,<1"]
 # EXPERIMENTAL / PoC: optional curl_cffi transport for browser TLS-JA3
-# impersonation (see docs/notes/curl-cffi-investigation.md). Native wheels, so
-# excluded from `all` like `cookies`. Opt in via pip install "notebooklm-py[impersonate]".
+# impersonation (NOTEBOOKLM_TRANSPORT=curl_cffi). Native wheels, so excluded from
+# `all` like `cookies`. Opt in via pip install "notebooklm-py[impersonate]".
 impersonate = ["curl_cffi>=0.11,<1"]
 mcp = ["fastmcp>=2.14,<4"]
 # Optional single-tenant REST server (the third _app adapter, after cli/ and

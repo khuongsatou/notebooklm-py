@@ -1,4 +1,4 @@
-"""PoC proof for the curl_cffi httpx-compat adapter (docs/notes/curl-cffi-investigation.md).
+"""PoC proof for the curl_cffi httpx-compat adapter.
 
 Drives ``CurlCffiAsyncClient`` against a local stdlib HTTP server to prove the
 contract the transport kernel relies on, end-to-end, without Google auth:

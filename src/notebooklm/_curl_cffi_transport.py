@@ -3,7 +3,7 @@
 Lets the transport kernel speak to Google over a connection that impersonates a
 real browser's TLS/JA3/HTTP-2 fingerprint (``curl_cffi``'s reason to exist),
 while every downstream consumer keeps seeing ``httpx.Response`` objects and
-``httpx`` exception types. See ``docs/notes/curl-cffi-investigation.md``.
+``httpx`` exception types.
 
 Scope: implements the slice of ``httpx.AsyncClient`` the authenticated surface uses
 — ``.cookies``, ``.get()``, ``.post()``, ``.stream()``, ``.aclose()`` — plus
@@ -11,8 +11,8 @@ Scope: implements the slice of ``httpx.AsyncClient`` the authenticated surface u
 Selected at runtime via ``NOTEBOOKLM_TRANSPORT=curl_cffi`` (see
 ``_runtime/init._resolve_async_client_factory`` / ``resolve_transport_factory``).
 
-ponytail: PoC, deliberately minimal. Known gaps (tracked in the investigation
-doc §6): httpx ``limits`` ignored (curl_cffi pools internally); the 4-slot
+ponytail: PoC, deliberately minimal. Known gaps: httpx ``limits`` ignored
+(curl_cffi pools internally); the 4-slot
 ``httpx.Timeout`` is folded to curl's ``(connect, read)`` model (write/pool have
 no libcurl equivalent — see ``_to_curl_timeout``); gzip handling assumes
 ``aiter_content``/``content`` yield already-decoded bytes (true for libcurl's
