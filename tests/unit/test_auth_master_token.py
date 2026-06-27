@@ -124,7 +124,8 @@ def test_storage_state_shape_and_namespace():
 def test_write_read_master_token_roundtrip_0600(tmp_path):
     path = tmp_path / "master_token.json"
     mt.write_master_token(path, email="e@x.com", master_token="aas_et/M", android_id="abc")
-    assert (path.stat().st_mode & 0o777) == 0o600
+    if sys.platform != "win32":  # Windows ignores POSIX mode bits
+        assert (path.stat().st_mode & 0o777) == 0o600
     rec = mt.read_master_token(path)
     assert rec["master_token"] == "aas_et/M" and rec["android_id"] == "abc"
 
