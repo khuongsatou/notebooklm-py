@@ -301,7 +301,12 @@ class CurlCffiAsyncClient:
             if r.status_code in _REDIRECT_STATUSES:
                 location = r.headers.get("location")
                 if not location:
-                    break  # redirect status without a target — surface as-is
+                    # Malformed redirect (3xx with no target): fail closed rather
+                    # than return a 3xx the caller's raise_for_status won't catch.
+                    raise httpx.RequestError(
+                        f"redirect status {r.status_code} without a Location header",
+                        request=httpx.Request("GET", current),
+                    )
                 current = urljoin(current, location)
                 continue
             return httpx.Response(

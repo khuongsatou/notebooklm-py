@@ -66,6 +66,7 @@ def _stub_curl_get(client: CurlCffiAsyncClient, responses, calls):
         "https://storage.googleapis.com%2eevil.example/x",  # suffix-smuggling
         "https://evil.example/x",  # plainly untrusted
         "http://storage.googleapis.com/x",  # non-HTTPS trusted host
+        "https://storage.googleapis.com@evil.com/x",  # userinfo — real host is evil.com
     ],
 )
 async def test_get_guarded_rejects_bad_initial_host(url):
@@ -134,6 +135,20 @@ async def test_get_guarded_blocks_percent_encoded_redirect_target():
     _stub_curl_get(client, [_FakeResp(302, location="https://evil%2egoogleapis.com/x")], calls)
     try:
         with pytest.raises(httpx.RequestError):
+            await client.get_guarded(
+                "https://storage.googleapis.com/start", is_trusted_host=_trust_local
+            )
+    finally:
+        await client.aclose()
+
+
+async def test_get_guarded_fails_closed_on_redirect_without_location():
+    """A 3xx with no Location must error (fail closed), not return the 3xx body."""
+    client = CurlCffiAsyncClient(cookies=httpx.Cookies())
+    calls: list = []
+    _stub_curl_get(client, [_FakeResp(302)], calls)  # 302, no location header
+    try:
+        with pytest.raises(httpx.RequestError, match="Location"):
             await client.get_guarded(
                 "https://storage.googleapis.com/start", is_trusted_host=_trust_local
             )
