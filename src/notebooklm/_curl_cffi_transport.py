@@ -24,13 +24,14 @@ from __future__ import annotations
 import asyncio
 import io
 import os
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import httpx
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Mapping
     from http.cookiejar import CookieJar
+    from typing import IO
 
 DEFAULT_IMPERSONATE = "chrome"
 # Recognized values for NOTEBOOKLM_TRANSPORT; anything else (non-empty) is a typo.
@@ -293,10 +294,24 @@ class CurlCffiAsyncClient:
         self.cookies.set_cookie_header(req)
         return req.headers.get("cookie", "")
 
+    def _connect_and_stall_timeouts(self) -> tuple[int, int]:
+        """Derive (connect, stall) seconds from the configured timeout.
+
+        Returns the connect cap and a stall window. No *overall* cap is applied —
+        a large upload that keeps progressing must not be killed — but a hung
+        connection is bounded by a low-speed (stall) guard set to the stall window.
+        """
+        t = self._timeout
+        if isinstance(t, tuple):  # (connect, read)
+            return int(t[0] or 30), int(t[1] or 300)
+        if isinstance(t, (int, float)):
+            return 30, int(t)
+        return 30, 300
+
     async def stream_upload(
         self,
         url: str,
-        source: Any,
+        source: IO[bytes] | str | os.PathLike[str],
         *,
         total_bytes: int,
         headers: Mapping[str, str],
@@ -308,18 +323,22 @@ class CurlCffiAsyncClient:
         this drops to the low-level ``Curl`` with ``CURLOPT_READFUNCTION`` so libcurl
         pulls the body in chunks. It impersonates the SAME fingerprint as the session
         (the upload endpoint correlates it) and runs the blocking ``perform()`` in a
-        thread. ``source`` is a file path (opened/closed here) or an open binary file
-        (read, not closed — the caller owns it). Returns an ``httpx.Response``.
+        thread. ``source`` is a file path (str/PathLike, opened/closed here) or an open
+        binary file (read, not closed — the caller owns it). Returns an ``httpx.Response``.
         """
-        from curl_cffi import Curl, CurlInfo, CurlOpt
-        from curl_cffi.requests import RequestsError
+        from curl_cffi import Curl, CurlError, CurlInfo, CurlOpt
 
         cookie_header = self._cookie_header_for(url)
         header_list = [f"{k}: {v}".encode() for k, v in headers.items()]
-        owns_handle = isinstance(source, os.PathLike)
+        owns_handle = isinstance(source, (str, bytes, os.PathLike))  # a path we open
+        connect_timeout, stall_timeout = self._connect_and_stall_timeouts()
 
         def _run() -> tuple[int, bytes]:
-            fh = open(source, "rb") if owns_handle else source  # noqa: SIM115 — closed below
+            # ``fh`` is Any: a path we open, or the caller's already-open binary file.
+            if owns_handle:
+                fh: Any = open(cast("str | os.PathLike[str]", source), "rb")  # noqa: SIM115
+            else:
+                fh = source
             body = io.BytesIO()
             curl = Curl()
             try:
@@ -333,7 +352,11 @@ class CurlCffiAsyncClient:
                 if cookie_header:
                     curl.setopt(CurlOpt.COOKIE, cookie_header.encode())
                 curl.setopt(CurlOpt.WRITEDATA, body)
-                curl.setopt(CurlOpt.CONNECTTIMEOUT, 30)  # no overall cap — large uploads
+                curl.setopt(CurlOpt.CONNECTTIMEOUT, connect_timeout)
+                # No overall cap (large uploads keep progressing), but bound a hung
+                # connection: abort if throughput stays < 1 byte/s for the stall window.
+                curl.setopt(CurlOpt.LOW_SPEED_LIMIT, 1)
+                curl.setopt(CurlOpt.LOW_SPEED_TIME, stall_timeout)
                 curl.perform()
                 status_raw: Any = curl.getinfo(CurlInfo.RESPONSE_CODE)
                 return int(status_raw), body.getvalue()
@@ -342,9 +365,16 @@ class CurlCffiAsyncClient:
                 if owns_handle:
                     fh.close()
 
+        # Shield the worker: a thread can't be cancelled, so if this coroutine is
+        # cancelled we let perform() finish rather than orphan a live authenticated
+        # upload, then propagate the cancellation.
+        task = asyncio.ensure_future(asyncio.to_thread(_run))
         try:
-            status, content = await asyncio.to_thread(_run)
-        except RequestsError as exc:
+            status, content = await asyncio.shield(task)
+        except asyncio.CancelledError:
+            await asyncio.gather(task, return_exceptions=True)
+            raise
+        except CurlError as exc:  # low-level Curl raises CurlError (RequestsError subclasses it)
             raise httpx.RequestError(str(exc), request=httpx.Request(method, url)) from exc
         # No cookie sync-back: the resumable upload leg doesn't rotate auth cookies,
         # and this used a standalone Curl (not the session jar).
