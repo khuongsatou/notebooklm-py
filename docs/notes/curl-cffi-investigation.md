@@ -275,13 +275,33 @@ upload) + hermetic suite (8 tests).
   runs the curl_cffi hermetic suite — proving the native wheels resolve on every OS and the adapter
   behaves cross-platform. (The canonical install omits the extra, so the suite is otherwise skipped
   via `importorskip`.)
-- **Streaming-upload buffering — won't-fix, by design.** curl_cffi's async `data=` accepts only
-  `bytes`/`str`/`BytesIO`/`dict`, never a generator, so a streamed upload body *must* be buffered for
-  the impersonate transport. This is a curl_cffi API limitation, not a client buffer we can stream
-  around; it is bounded by NotebookLM's per-source upload size limit, and the default httpx transport
-  still streams. Documented at `_materialize`; no arbitrary cap added (would risk rejecting valid
-  uploads). Only genuinely open item now: nothing blocking — the transport is feature-complete for
-  the authenticated API surface.
+- **Streaming-upload buffering — RESOLVED (§12).** Initially a limitation (curl_cffi's high-level
+  async `data=` always buffers into `CURLOPT_POSTFIELDS`), now fixed via a low-level libcurl path —
+  see §12.
+
+## 12. True streaming upload via low-level libcurl (2026-06-26)
+
+curl_cffi's high-level requests/`AsyncSession` API buffers the whole request body into
+`CURLOPT_POSTFIELDS` (`requests/utils.py:439-463`) — it has no read-callback, so a file upload would
+be loaded fully into memory. Fixed by dropping to curl_cffi's **low-level `Curl`** for the upload leg:
+
+- `CurlCffiAsyncClient.stream_upload(url, source, total_bytes, headers)` sets `CURLOPT_UPLOAD` +
+  `CURLOPT_CUSTOMREQUEST=POST` + `CURLOPT_INFILESIZE_LARGE` + `CURLOPT_READFUNCTION=fh.read` so libcurl
+  pulls the body from disk in chunks, never buffering the whole file. It `impersonate()`s the SAME
+  fingerprint (the upload endpoint correlates it), sends the auth cookies (built from the jar via
+  `httpx.Cookies.set_cookie_header`), and runs the blocking `perform()` in `asyncio.to_thread`.
+  Returns an `httpx.Response`.
+- `_source/upload.py::upload_file_streaming` routes through it when the client is a
+  `CurlCffiAsyncClient` (isinstance, not duck-typing — test mocks auto-spawn attributes); httpx still
+  streams natively via the async-generator `content=` path.
+
+**LIVE-verified:** a 2,160,000-byte file uploaded to NotebookLM through `stream_upload` (instrumented:
+`stream_upload invoked: 1`, streamed bytes == file size, real source id returned), plus the e2e
+upload suite (text/pdf/markdown) green under curl_cffi. Hermetic test covers Path + open-file sources;
+adapter coverage 93%. The generic `.post()` path still buffers via `_materialize` (only used for the
+small resumable-init body, not the file payload).
+
+Nothing blocking remains — the transport is feature-complete for the authenticated API surface.
 
 **Config:** `NOTEBOOKLM_TRANSPORT=curl_cffi` enables the transport; `NOTEBOOKLM_IMPERSONATE`
 overrides the impersonation target (default `chrome`; any curl_cffi target, e.g. `safari`,

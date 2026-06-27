@@ -5,9 +5,11 @@ real browser's TLS/JA3/HTTP-2 fingerprint (``curl_cffi``'s reason to exist),
 while every downstream consumer keeps seeing ``httpx.Response`` objects and
 ``httpx`` exception types. See ``docs/notes/curl-cffi-investigation.md``.
 
-Scope: implements ONLY the slice of ``httpx.AsyncClient`` the kernel uses —
-``.cookies``, ``.get()``, ``.stream()``, ``.aclose()`` — selected at runtime via
-``NOTEBOOKLM_TRANSPORT=curl_cffi`` (see ``_runtime/init._resolve_async_client_factory``).
+Scope: implements the slice of ``httpx.AsyncClient`` the authenticated surface uses
+— ``.cookies``, ``.get()``, ``.post()``, ``.stream()``, ``.aclose()`` — plus
+``.stream_upload()`` (low-level libcurl streaming upload, no full-file buffer).
+Selected at runtime via ``NOTEBOOKLM_TRANSPORT=curl_cffi`` (see
+``_runtime/init._resolve_async_client_factory`` / ``resolve_transport_factory``).
 
 ponytail: PoC, deliberately minimal. Known gaps (tracked in the investigation
 doc §6): httpx ``limits`` ignored (curl_cffi pools internally); the 4-slot
@@ -19,6 +21,7 @@ auto-decompress — verify against real gzip'd RPC before production).
 
 from __future__ import annotations
 
+import asyncio
 import io
 import os
 from typing import TYPE_CHECKING, Any
@@ -184,6 +187,7 @@ class CurlCffiAsyncClient:
         impersonate_value: Any = impersonate or os.environ.get(
             "NOTEBOOKLM_IMPERSONATE", DEFAULT_IMPERSONATE
         )
+        self._impersonate = impersonate_value  # reused by the low-level streaming upload
         self._curl: Any = AsyncSession(
             headers=dict(headers) if headers else None,
             cookies=self.cookies.jar,
@@ -282,6 +286,71 @@ class CurlCffiAsyncClient:
             stream_kwargs["headers"] = dict(kwargs.pop("headers"))
         stream_kwargs.update(kwargs)
         return _StreamCtx(self, method, url, stream_kwargs)
+
+    def _cookie_header_for(self, url: str) -> str:
+        """Build the ``Cookie:`` header for ``url`` from the authoritative jar."""
+        req = httpx.Request("GET", url)
+        self.cookies.set_cookie_header(req)
+        return req.headers.get("cookie", "")
+
+    async def stream_upload(
+        self,
+        url: str,
+        source: Any,
+        *,
+        total_bytes: int,
+        headers: Mapping[str, str],
+        method: str = "POST",
+    ) -> httpx.Response:
+        """Stream a request body from disk via libcurl — no full-body buffering.
+
+        The high-level curl_cffi API always buffers ``data`` into ``CURLOPT_POSTFIELDS``;
+        this drops to the low-level ``Curl`` with ``CURLOPT_READFUNCTION`` so libcurl
+        pulls the body in chunks. It impersonates the SAME fingerprint as the session
+        (the upload endpoint correlates it) and runs the blocking ``perform()`` in a
+        thread. ``source`` is a file path (opened/closed here) or an open binary file
+        (read, not closed — the caller owns it). Returns an ``httpx.Response``.
+        """
+        from curl_cffi import Curl, CurlInfo, CurlOpt
+        from curl_cffi.requests import RequestsError
+
+        cookie_header = self._cookie_header_for(url)
+        header_list = [f"{k}: {v}".encode() for k, v in headers.items()]
+        owns_handle = isinstance(source, os.PathLike)
+
+        def _run() -> tuple[int, bytes]:
+            fh = open(source, "rb") if owns_handle else source  # noqa: SIM115 — closed below
+            body = io.BytesIO()
+            curl = Curl()
+            try:
+                curl.impersonate(self._impersonate)
+                curl.setopt(CurlOpt.URL, url.encode())
+                curl.setopt(CurlOpt.UPLOAD, 1)
+                curl.setopt(CurlOpt.CUSTOMREQUEST, method.encode())  # UPLOAD defaults to PUT
+                curl.setopt(CurlOpt.INFILESIZE_LARGE, total_bytes)
+                curl.setopt(CurlOpt.READFUNCTION, fh.read)  # libcurl pulls chunks from disk
+                curl.setopt(CurlOpt.HTTPHEADER, header_list)
+                if cookie_header:
+                    curl.setopt(CurlOpt.COOKIE, cookie_header.encode())
+                curl.setopt(CurlOpt.WRITEDATA, body)
+                curl.setopt(CurlOpt.CONNECTTIMEOUT, 30)  # no overall cap — large uploads
+                curl.perform()
+                status_raw: Any = curl.getinfo(CurlInfo.RESPONSE_CODE)
+                return int(status_raw), body.getvalue()
+            finally:
+                curl.close()
+                if owns_handle:
+                    fh.close()
+
+        try:
+            status, content = await asyncio.to_thread(_run)
+        except RequestsError as exc:
+            raise httpx.RequestError(str(exc), request=httpx.Request(method, url)) from exc
+        # No cookie sync-back: the resumable upload leg doesn't rotate auth cookies,
+        # and this used a standalone Curl (not the session jar).
+        return httpx.Response(
+            status_code=status, content=content, request=httpx.Request(method, url)
+        )
 
     async def aclose(self) -> None:
         await self._curl.close()

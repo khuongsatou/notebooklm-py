@@ -268,6 +268,33 @@ async def test_caller_cookies_jar_is_not_mutated():
         await client.aclose()
 
 
+async def test_stream_upload_streams_from_disk(server, tmp_path):
+    """stream_upload() streams a file body via low-level libcurl (Path + open-file)."""
+    payload = b"streamed-body-" + b"x" * 5000
+    p = tmp_path / "blob.bin"
+    p.write_bytes(payload)
+
+    client = CurlCffiAsyncClient(cookies=httpx.Cookies())
+    try:
+        # Path source — opened/closed internally.
+        r1 = await client.stream_upload(
+            f"{server}/rpc", p, total_bytes=len(payload), headers={"X-Up": "1"}
+        )
+        assert isinstance(r1, httpx.Response)
+        assert r1.status_code == 200
+        assert r1.content == b"echo:" + payload
+
+        # Open binary file source — read, not closed by stream_upload.
+        with p.open("rb") as fh:
+            r2 = await client.stream_upload(
+                f"{server}/rpc", fh, total_bytes=len(payload), headers={"X-Up": "1"}
+            )
+            assert fh.closed is False  # caller owns it
+        assert r2.content == b"echo:" + payload
+    finally:
+        await client.aclose()
+
+
 async def test_env_seam_selects_curl_cffi_factory(monkeypatch):
     from notebooklm._runtime.init import _resolve_async_client_factory
 
