@@ -7402,6 +7402,96 @@
           "type": {
             "name": "text"
           }
+        },
+        {
+          "default": false,
+          "envvar": null,
+          "has_custom_shell_complete": false,
+          "help": "Headless auth: bootstrap a durable Google master token (one browser sign-in), then mint web cookies from it with no per-session browser. Requires --account EMAIL. Provide the single-use oauth_token via --oauth-token, or let a visible browser capture it. Needs pip install 'notebooklm-py[headless]'. See docs/installation.md#headless.",
+          "is_flag": true,
+          "kind": "option",
+          "multiple": false,
+          "name": "master_token",
+          "opts": [
+            "--master-token"
+          ],
+          "required": false,
+          "secondary_opts": [],
+          "type": {
+            "name": "boolean"
+          }
+        },
+        {
+          "default": false,
+          "envvar": null,
+          "has_custom_shell_complete": false,
+          "help": "Re-mint web cookies from the stored master token (no prompt). For recovery / cron.",
+          "is_flag": true,
+          "kind": "option",
+          "multiple": false,
+          "name": "master_token_refresh",
+          "opts": [
+            "--master-token-refresh"
+          ],
+          "required": false,
+          "secondary_opts": [],
+          "type": {
+            "name": "boolean"
+          }
+        },
+        {
+          "default": null,
+          "envvar": null,
+          "has_custom_shell_complete": false,
+          "help": "Single-use EmbeddedSetup oauth_token for --master-token (else captured via browser).",
+          "is_flag": false,
+          "kind": "option",
+          "multiple": false,
+          "name": "oauth_token",
+          "opts": [
+            "--oauth-token"
+          ],
+          "required": false,
+          "secondary_opts": [],
+          "type": {
+            "name": "text"
+          }
+        },
+        {
+          "default": null,
+          "envvar": null,
+          "has_custom_shell_complete": false,
+          "help": "Override the per-install Android id for --master-token (default: generated/persisted).",
+          "is_flag": false,
+          "kind": "option",
+          "multiple": false,
+          "name": "android_id",
+          "opts": [
+            "--android-id"
+          ],
+          "required": false,
+          "secondary_opts": [],
+          "type": {
+            "name": "text"
+          }
+        },
+        {
+          "default": null,
+          "envvar": null,
+          "has_custom_shell_complete": false,
+          "help": "Attach oauth_token capture to a running Chrome via CDP (e.g. http://localhost:9222).",
+          "is_flag": false,
+          "kind": "option",
+          "multiple": false,
+          "name": "cdp_url",
+          "opts": [
+            "--cdp-url"
+          ],
+          "required": false,
+          "secondary_opts": [],
+          "type": {
+            "name": "text"
+          }
         }
       ],
       "short_help": "Log in to NotebookLM via browser."
