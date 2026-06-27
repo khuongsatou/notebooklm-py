@@ -341,6 +341,7 @@ async def test_connect_and_stall_timeouts_never_zero():
     cases = [
         (0, (30, 300)),
         (None, (30, 300)),
+        (5, (5, 5)),  # scalar applies to both connect + read (httpx semantics)
         (httpx.Timeout(0, read=0), (30, 300)),
         (httpx.Timeout(5.0, read=120.0), (5, 120)),
     ]

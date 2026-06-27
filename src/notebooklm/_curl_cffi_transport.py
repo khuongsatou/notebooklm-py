@@ -312,7 +312,7 @@ class CurlCffiAsyncClient:
         if isinstance(timeout, tuple):  # (connect, read)
             connect, read = timeout
         elif isinstance(timeout, (int, float)):
-            connect, read = _DEFAULT_CONNECT_TIMEOUT, timeout
+            connect = read = timeout  # httpx scalar timeout applies to every slot
         else:
             connect, read = _DEFAULT_CONNECT_TIMEOUT, _DEFAULT_STALL_TIMEOUT
         return (int(connect) or _DEFAULT_CONNECT_TIMEOUT, int(read) or _DEFAULT_STALL_TIMEOUT)
