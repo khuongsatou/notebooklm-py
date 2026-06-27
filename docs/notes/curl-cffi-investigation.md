@@ -270,11 +270,13 @@ upload) + hermetic suite (8 tests).
 
 ## 11. Closing the last two gaps (2026-06-26)
 
-- **Native-wheel CI matrix.** Added a dedicated `impersonate` job to `.github/workflows/test.yml`
-  (ubuntu/macos/windows, mirroring the `mcp`/`server` jobs) that installs `--extra impersonate` and
-  runs the curl_cffi hermetic suite — proving the native wheels resolve on every OS and the adapter
-  behaves cross-platform. (The canonical install omits the extra, so the suite is otherwise skipped
-  via `importorskip`.)
+- **Native-wheel CI matrix.** `--extra impersonate` is installed in the main `test` matrix in
+  `.github/workflows/test.yml` (alongside `mcp`/`server`, per #1633), so the curl_cffi hermetic suite
+  (`tests/unit/test_curl_cffi_transport_poc.py`) runs across the full 3.10–3.14 × 3-OS matrix instead
+  of being `importorskip`'d — proving the native wheels resolve everywhere, with coverage folded into
+  the aggregate `--cov=src/notebooklm --cov-fail-under=90` gate (same treatment as the mcp/server
+  suites). The lean `quality` job still installs without the extra, so the "core imports without
+  optional adapter extras" guard confirms nothing top-level-imports `curl_cffi`.
 - **Streaming-upload buffering — RESOLVED (§12).** Initially a limitation (curl_cffi's high-level
   async `data=` always buffers into `CURLOPT_POSTFIELDS`), now fixed via a low-level libcurl path —
   see §12.
