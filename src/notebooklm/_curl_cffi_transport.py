@@ -250,7 +250,7 @@ class CurlCffiAsyncClient:
         url: str,
         *,
         is_trusted_host: Callable[[str | None], bool],
-        max_redirects: int = 10,
+        max_redirects: int = 20,  # match httpx.AsyncClient's default for cross-transport parity
         **kwargs: Any,
     ) -> httpx.Response:
         """GET that follows redirects MANUALLY, re-validating every hop's host.
@@ -504,8 +504,9 @@ def resolve_transport_factory() -> Any:
 
     The single source of truth for ``NOTEBOOKLM_TRANSPORT=curl_cffi``: returns the
     curl_cffi factory when set, else ``httpx.AsyncClient``. Used by every
-    authenticated-Google client site (main RPC kernel, upload, account, refresh) so
-    the whole API surface shares ONE TLS fingerprint.
+    authenticated-Google client site (main RPC kernel, upload, account, refresh, and
+    artifact downloads) so the whole API surface shares ONE TLS fingerprint —
+    including the download's cookie-bearing first hop.
 
     ``httpx.AsyncClient`` is resolved at CALL time (not bound as a default arg) so
     tests that ``patch("httpx.AsyncClient")`` still intercept the opt-out path.
@@ -514,12 +515,10 @@ def resolve_transport_factory() -> Any:
     when the returned factory is actually called, so the opt-out path stays pure-httpx
     with no hard dependency.
 
-    Deliberate exception: artifact downloads stay on httpx even under the opt-in. They
-    target signed ``googleusercontent`` URLs (a CDN host, not the authenticated API
-    surface) and rely on httpx response ``event_hooks`` for the #1521 redirect-host
-    SSRF revalidation, which curl_cffi's internal redirect handling can't replicate
-    without disabling redirects. Fingerprint cosmetics there aren't worth dropping the
-    SSRF guard.
+    Downloads keep the #1521 redirect-host SSRF guard on both transports: httpx uses
+    response ``event_hooks``; the curl_cffi path can't inject a hook into libcurl's
+    internal auto-follow loop, so ``CurlCffiAsyncClient.get_guarded`` disables
+    auto-follow and re-validates each hop manually (see ``_artifact/_download_client``).
 
     A non-empty ``NOTEBOOKLM_TRANSPORT`` that isn't a known transport raises, so a
     typo (e.g. ``curlcffi``) fails loudly instead of silently using httpx while the

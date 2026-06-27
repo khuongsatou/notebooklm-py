@@ -24,7 +24,10 @@ import pytest
 
 pytest.importorskip("curl_cffi", reason="requires the optional [impersonate] extra")
 
-from notebooklm._artifact.downloads import _is_trusted_download_host  # noqa: E402
+from notebooklm._artifact.downloads import (  # noqa: E402
+    _is_trusted_download_host,
+    _make_download_client,
+)
 from notebooklm._curl_cffi_transport import CurlCffiAsyncClient  # noqa: E402
 
 
@@ -138,6 +141,42 @@ async def test_get_guarded_blocks_percent_encoded_redirect_target():
             await client.get_guarded(
                 "https://storage.googleapis.com/start", is_trusted_host=_trust_local
             )
+    finally:
+        await client.aclose()
+
+
+# --- Factory-selection wiring: downloads actually route through get_guarded ---
+
+
+async def test_make_download_client_routes_through_get_guarded_under_curl_env(monkeypatch):
+    """Under NOTEBOOKLM_TRANSPORT=curl_cffi the download client is curl_cffi AND its
+    getter drives get_guarded with the real #1521 trusted-host predicate."""
+    monkeypatch.setenv("NOTEBOOKLM_TRANSPORT", "curl_cffi")
+    client, do_get = _make_download_client(httpx.Cookies(), timeout=30.0)
+    assert isinstance(client, CurlCffiAsyncClient)
+    captured: dict = {}
+
+    async def fake_guarded(url, *, is_trusted_host, **kwargs):
+        captured["url"] = url
+        captured["pred"] = is_trusted_host
+        return httpx.Response(200, content=b"ok", request=httpx.Request("GET", url))
+
+    client.get_guarded = fake_guarded
+    try:
+        resp = await do_get("https://storage.googleapis.com/x")
+    finally:
+        await client.aclose()
+    assert resp.content == b"ok"
+    assert captured["url"] == "https://storage.googleapis.com/x"
+    # The SSRF allowlist predicate must be the one actually wired in.
+    assert captured["pred"] is _is_trusted_download_host
+
+
+async def test_make_download_client_uses_httpx_by_default(monkeypatch):
+    monkeypatch.delenv("NOTEBOOKLM_TRANSPORT", raising=False)
+    client, _ = _make_download_client(httpx.Cookies(), timeout=30.0)
+    try:
+        assert isinstance(client, httpx.AsyncClient)
     finally:
         await client.aclose()
 

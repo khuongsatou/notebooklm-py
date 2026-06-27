@@ -126,6 +126,29 @@ def _load_httpx_cookies(storage_path: Any) -> Any:
     return load_httpx_cookies(path=storage_path)
 
 
+def _reject_html_download(response: httpx.Response) -> None:
+    """Reject an HTML body served where a media file was expected (usually expired auth).
+
+    Shared by both ``download_url`` transport branches (curl_cffi buffered + httpx
+    streaming), which detect this the same way and raise the same guidance.
+    """
+    if "text/html" in response.headers.get("content-type", ""):
+        raise ArtifactDownloadError(
+            "media",
+            details="Download failed: received HTML instead of media file. "
+            "Authentication may have expired. Run 'notebooklm login'.",
+        )
+
+
+def _reject_empty_download(total_bytes: int) -> None:
+    """Reject a zero-byte download (the remote file is missing or empty)."""
+    if total_bytes == 0:
+        raise ArtifactDownloadError(
+            "media",
+            details="Download produced 0 bytes -- the remote file may be missing or empty",
+        )
+
+
 class ArtifactDownloadService:
     """Download operations extracted from :class:`ArtifactsAPI`."""
 
@@ -797,21 +820,8 @@ class ArtifactDownloadService:
                             url, is_trusted_host=_is_trusted_download_host
                         )
                         response.raise_for_status()
-                        content_type = response.headers.get("content-type", "")
-                        if "text/html" in content_type:
-                            raise ArtifactDownloadError(
-                                "media",
-                                details="Download failed: received HTML instead of media file. "
-                                "Authentication may have expired. Run 'notebooklm login'.",
-                            )
-                        if not response.content:
-                            raise ArtifactDownloadError(
-                                "media",
-                                details=(
-                                    "Download produced 0 bytes -- the remote file may "
-                                    "be missing or empty"
-                                ),
-                            )
+                        _reject_html_download(response)
+                        _reject_empty_download(len(response.content))
                         await asyncio.to_thread(temp_file.write_bytes, response.content)
                     os.replace(temp_file, output_file)
                     logger.debug(
@@ -829,14 +839,7 @@ class ArtifactDownloadService:
                 ) as client:
                     async with client.stream("GET", url) as response:
                         response.raise_for_status()
-
-                        content_type = response.headers.get("content-type", "")
-                        if "text/html" in content_type:
-                            raise ArtifactDownloadError(
-                                "media",
-                                details="Download failed: received HTML instead of media file. "
-                                "Authentication may have expired. Run 'notebooklm login'.",
-                            )
+                        _reject_html_download(response)
 
                         # Producer/consumer split: one dedicated ``threading.Thread``
                         # (not ``asyncio.to_thread``, which would tie up a default-
@@ -944,14 +947,7 @@ class ArtifactDownloadService:
                             await _await_writer_exit(writer_thread)
                             raise
 
-                        if total_bytes == 0:
-                            raise ArtifactDownloadError(
-                                "media",
-                                details=(
-                                    "Download produced 0 bytes -- the remote file may "
-                                    "be missing or empty"
-                                ),
-                            )
+                        _reject_empty_download(total_bytes)
 
                         os.replace(temp_file, output_file)
                         logger.debug(
