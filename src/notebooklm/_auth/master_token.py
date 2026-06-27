@@ -20,10 +20,12 @@ uberauth, or cookie values.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
 import secrets
+import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -45,6 +47,12 @@ _REQUIRED_MINTED_COOKIES = {"SID", "APISID", "SAPISID"}
 _MASTER_TOKEN_VERSION = 1
 
 logger = logging.getLogger("notebooklm.auth.master_token")
+
+# Serializes the global-logger save/restore in _quiet_gpsoauth_logging so
+# overlapping re-mints on different threads (asyncio.to_thread) can't stomp each
+# other's saved levels. ponytail: one process-wide lock; the window is one short
+# sync RPC, so contention is negligible.
+_LOG_LOCK = threading.Lock()
 
 
 class MasterTokenError(Exception):
@@ -70,14 +78,15 @@ def _quiet_gpsoauth_logging() -> Iterator[None]:
     """Silence urllib3/requests DEBUG bodies around the gpsoauth call so the
     master token / ya29 in request bodies never reach a debug log sink."""
     names = ("urllib3", "requests", "urllib3.connectionpool")
-    saved = {n: logging.getLogger(n).level for n in names}
-    try:
-        for n in names:
-            logging.getLogger(n).setLevel(logging.WARNING)
-        yield
-    finally:
-        for n, lvl in saved.items():
-            logging.getLogger(n).setLevel(lvl)
+    with _LOG_LOCK:
+        saved = {n: logging.getLogger(n).level for n in names}
+        try:
+            for n in names:
+                logging.getLogger(n).setLevel(logging.WARNING)
+            yield
+        finally:
+            for n, lvl in saved.items():
+                logging.getLogger(n).setLevel(lvl)
 
 
 def generate_android_id() -> str:
@@ -115,9 +124,10 @@ async def mint_cookies(email: str, master_token: str, android_id: str) -> httpx.
     cookies the web client needs.
     """
     gpsoauth = _require_gpsoauth()
-    try:
+
+    def _perform() -> Any:
         with _quiet_gpsoauth_logging():
-            oauth = gpsoauth.perform_oauth(
+            return gpsoauth.perform_oauth(
                 email,
                 master_token,
                 android_id,
@@ -125,6 +135,11 @@ async def mint_cookies(email: str, master_token: str, android_id: str) -> httpx.
                 app=_MASTER_APP,
                 client_sig=_MASTER_SIG,
             )
+
+    try:
+        # perform_oauth is a sync (requests) network call — off-thread it so it
+        # never blocks the event loop of a live client during layer-4 recovery.
+        oauth = await asyncio.to_thread(_perform)
     except Exception as exc:  # noqa: BLE001 — any gpsoauth/transport failure; never leak the body
         raise MasterTokenError("perform_oauth failed (network or gpsoauth error).") from exc
     bearer = oauth.get("Auth")
@@ -152,7 +167,7 @@ async def mint_cookies(email: str, master_token: str, android_id: str) -> httpx.
                 "https://accounts.google.com/MergeSession",
                 params={
                     "service": "mail",
-                    "continue": "http://www.google.com",
+                    "continue": "https://www.google.com",
                     "uberauth": uberauth,
                 },
                 headers=auth,
@@ -207,7 +222,7 @@ def persist_minted_jar(path: Path, jar: httpx.Cookies, *, email: str | None) -> 
         data: dict[str, Any] = {}
         if path.exists():
             try:
-                loaded = json.loads(path.read_text())
+                loaded = json.loads(path.read_text(encoding="utf-8"))
                 data = loaded if isinstance(loaded, dict) else {}
             except json.JSONDecodeError:
                 data = {}
@@ -219,9 +234,11 @@ def persist_minted_jar(path: Path, jar: httpx.Cookies, *, email: str | None) -> 
         ns["account"] = {"authuser": 0, **({"email": email} if email else {})}
         data["notebooklm"] = ns
         # 0600: the jar holds live session cookies (SID/SAPISID/__Secure-1PSID…).
-        tmp = path.with_name(path.name + ".tmp")
+        # Hidden .{name}.tmp matches write_master_token so neither leaves a
+        # visible *.tmp artifact mid-write.
+        tmp = path.with_name(f".{path.name}.tmp")
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w") as f:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(data, f)
         tmp.replace(path)
 
@@ -235,9 +252,11 @@ def read_master_token(path: Path) -> dict[str, Any] | None:
     if not path.exists():
         return None
     try:
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise MasterTokenError(f"Unreadable master_token.json: {exc}") from exc
+    if not isinstance(data, dict):  # e.g. a bare JSON array — avoid .get AttributeError
+        raise MasterTokenError("master_token.json is malformed or an unsupported version.")
     required = ("master_token", "email", "android_id")
     if data.get("version") != _MASTER_TOKEN_VERSION or any(not data.get(k) for k in required):
         raise MasterTokenError("master_token.json is malformed or an unsupported version.")
@@ -257,6 +276,6 @@ def write_master_token(path: Path, *, email: str, master_token: str, android_id:
     # full-account credential. umask cannot widen 0600 (it has no group/other bits).
     tmp = path.parent / f".{path.name}.tmp"
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as f:
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
         json.dump(payload, f)
     tmp.replace(path)

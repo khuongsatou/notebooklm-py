@@ -234,7 +234,8 @@ def register_session_commands(cli):
         default=None,
         help=(
             "Pick a signed-in Google account by email when several are present "
-            "in the browser. Only valid with --browser-cookies."
+            "in the browser. Required with --master-token; otherwise only valid "
+            "with --browser-cookies."
         ),
     )
     @click.option(
@@ -298,9 +299,9 @@ def register_session_commands(cli):
         help=(
             "Headless auth: bootstrap a durable Google master token (one browser "
             "sign-in), then mint web cookies from it with no per-session browser. "
-            "Requires --account EMAIL. Provide the single-use oauth_token via "
-            "--oauth-token, or let a visible browser capture it. Needs "
-            "pip install 'notebooklm-py[headless]'. See docs/installation.md#headless."
+            "Requires --account EMAIL. Needs pip install 'notebooklm-py[headless]'; "
+            "the browser oauth_token capture also needs [browser] — or skip it by "
+            "passing --oauth-token. See docs/installation.md#headless."
         ),
     )
     @click.option(

@@ -141,6 +141,14 @@ def test_read_master_token_malformed(tmp_path):
         mt.read_master_token(path)
 
 
+def test_read_master_token_non_dict_json(tmp_path):
+    # A bare JSON array must raise MasterTokenError, not AttributeError on .get.
+    path = tmp_path / "master_token.json"
+    path.write_text(json.dumps([]))
+    with pytest.raises(MasterTokenError, match="malformed|version"):
+        mt.read_master_token(path)
+
+
 def test_generate_android_id_is_16_hex():
     aid = mt.generate_android_id()
     assert len(aid) == 16 and int(aid, 16) >= 0 and aid != mt.generate_android_id()

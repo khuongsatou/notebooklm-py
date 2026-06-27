@@ -247,19 +247,29 @@ async def _try_master_token_reauth(*, auth: AuthTokens, kernel: Kernel) -> bool:
     from .master_token import MasterTokenError, mint_cookies, persist_minted_jar, read_master_token
 
     try:
-        rec = read_master_token(master_token_path)
+        rec = await asyncio.to_thread(read_master_token, master_token_path)
         if rec is None:
             return False
         jar = await mint_cookies(rec["email"], rec["master_token"], rec["android_id"])
     except MasterTokenError as exc:
-        # Credential-free type name only; the dead-cookie error stands.
-        logger.warning(
-            "Master-token re-mint failed (%s); 'Authentication expired' stands.",
-            type(exc).__name__,
-        )
+        # MasterTokenError messages are credential-free by construction (see the
+        # module docstring), so log the full message — it carries the actionable
+        # reason (revoked / missing cookies / re-bootstrap).
+        logger.warning("Master-token re-mint failed (%s); 'Authentication expired' stands.", exc)
         return False
 
-    persist_minted_jar(storage_path, jar, email=rec.get("email"))
+    # persist_minted_jar takes the storage filelock (blocking, up to 10s) — keep
+    # it off the live client's event loop. A persist failure (I/O / lock timeout)
+    # must surface as a non-success, not a low-level error replacing the intended
+    # "Authentication expired".
+    try:
+        await asyncio.to_thread(persist_minted_jar, storage_path, jar, email=rec.get("email"))
+    except OSError as exc:
+        logger.warning(
+            "Master-token re-mint persisted storage failed (%s); 'Authentication expired' stands.",
+            exc,
+        )
+        return False
     # Reload through the recovery-aware loader so inline PSIDTS recovery mints
     # __Secure-1PSIDTS from the fresh SID + secondary binding.
     try:

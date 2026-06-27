@@ -7,6 +7,7 @@ profile's ``storage_state.json`` so the existing client runs unchanged.
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 from ....auth import (  # noqa: TID252 (package-relative; public boundary, not _auth.*)
@@ -42,23 +43,31 @@ async def bootstrap(
     token, persist it (0600), mint cookies, write ``storage_state.json``, and
     (optionally) verify by listing notebooks. Returns the notebook count (or -1
     when verify is False). Raises :class:`MasterTokenError` on rejection."""
-    token = exchange_master_token(email, oauth_token, android_id)
-    write_master_token(master_token_path, email=email, master_token=token, android_id=android_id)
+    # exchange/write/persist are sync (network + locked file I/O) — off-thread so
+    # they don't block the event loop the CLI runs them on.
+    token = await asyncio.to_thread(exchange_master_token, email, oauth_token, android_id)
+    await asyncio.to_thread(
+        write_master_token,
+        master_token_path,
+        email=email,
+        master_token=token,
+        android_id=android_id,
+    )
     jar = await mint_cookies(email, token, android_id)
-    persist_minted_jar(storage_path, jar, email=email)
+    await asyncio.to_thread(persist_minted_jar, storage_path, jar, email=email)
     return await _verify(storage_path) if verify else -1
 
 
 async def refresh(*, storage_path: Path, master_token_path: Path) -> None:
     """No-prompt re-mint from the stored master token (recovery / hand-run).
     Overwrites ``storage_state.json`` with a fresh session."""
-    rec = read_master_token(master_token_path)
+    rec = await asyncio.to_thread(read_master_token, master_token_path)
     if rec is None:
         raise MasterTokenError(
             f"No master token at {master_token_path}. Run `notebooklm login --master-token` first."
         )
     jar = await mint_cookies(rec["email"], rec["master_token"], rec["android_id"])
-    persist_minted_jar(storage_path, jar, email=rec.get("email"))
+    await asyncio.to_thread(persist_minted_jar, storage_path, jar, email=rec.get("email"))
 
 
 def capture_oauth_token(
@@ -90,7 +99,11 @@ def capture_oauth_token(
                 context = browser_obj.new_context()
                 owns_context = True
         else:
-            browser_obj = p.chromium.launch(headless=False)
+            # Respect --browser: "chromium" is the bundled build; "chrome"/"msedge"
+            # are system Chromium channels (the documented macOS-15-crash workaround).
+            # channel=None selects the bundled Chromium.
+            channel = browser if browser and browser != "chromium" else None
+            browser_obj = p.chromium.launch(headless=False, channel=channel)
             owns_browser = True
             context = browser_obj.new_context()
             owns_context = True
