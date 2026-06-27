@@ -714,6 +714,60 @@ def test_error_frame_without_code_still_surfaces_chat_error() -> None:
         parse_streaming_chat_response(_length_prefixed(error_frame))
 
 
+def test_oversize_request_status_frame_surfaces_chat_error() -> None:
+    """An oversized request must surface the size-limit error, not a parse error.
+
+    When the question (or accumulated history) exceeds the server's size limit,
+    the chat endpoint returns a null-inner ``wrb.fr`` frame carrying the bare
+    status payload ``[3]`` (gRPC INVALID_ARGUMENT) and no answer chunk. The
+    trailing ``["e", n, null, null, N]`` frame is a batchexecute byte-count
+    trailer (``N`` = response bytes), NOT an error code — it appears on every
+    streamed response. The parser previously recognised neither the ``[3]``
+    status nor surfaced anything, so the response collapsed into the generic
+    ``ChatResponseParseError`` ("No parseable chunks …"), masking the real
+    cause (issue #1634).
+    """
+    # The exact wire frame sequence captured in issue #1634 (the "e" frame's
+    # 132 is the byte count of this small error response, not a code).
+    response = _length_prefixed(
+        json.dumps([["wrb.fr", None, None, None, None, [3]]]),
+        json.dumps([["di", 198], ["af.httprm", 197, "-1460015816955467607", 6]]),
+        json.dumps([["e", 4, None, None, 132]]),
+    )
+
+    with pytest.raises(ChatError, match=r"status code 3.*too large") as raised:
+        parse_streaming_chat_response(response)
+
+    assert "INVALID_ARGUMENT" in str(raised.value)
+
+
+def test_benign_byte_count_e_frame_does_not_raise() -> None:
+    """A streamed answer ending in the ``"e"`` byte-count trailer parses cleanly.
+
+    Guards the #1634 fix against the naive "treat every ``e`` frame as an error"
+    approach: the trailer ``["e", 24, null, null, 441040]`` rides on every
+    successful response and must never be mistaken for an error.
+    """
+    answer = _chunk("The answer.", conversation_id="conv")
+    byte_count_trailer = json.dumps([["e", 24, None, None, 441040]])
+    response = _length_prefixed(answer, byte_count_trailer)
+
+    result = parse_streaming_chat_response(response)
+    assert result.answer == "The answer."
+
+
+def test_non_rate_limit_error_payload_surfaces_generic_chat_error() -> None:
+    """A null-inner ``wrb.fr`` with an unrecognized status code still raises.
+
+    Any non-rate-limit error payload on the null-inner channel surfaces a
+    ``ChatError`` echoing the status code rather than collapsing into the
+    generic parse error (issue #1634)."""
+    error_frame = json.dumps([["wrb.fr", None, None, None, None, [7]]])
+
+    with pytest.raises(ChatError, match=r"status code 7"):
+        parse_streaming_chat_response(_length_prefixed(error_frame))
+
+
 def test_chat_wire_static_import_guard() -> None:
     forbidden = {
         "notebooklm",

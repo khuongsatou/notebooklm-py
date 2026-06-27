@@ -329,9 +329,20 @@ def _extract_chunk_with_parseable(
             # recognized error payload is not a successfully decoded
             # envelope. The error-payload path raises, so flow only
             # reaches the next iteration when item[5] was absent/unusable.
+            #
+            # A successful streamed answer ALWAYS carries a string ``inner_json``
+            # (the answer JSON), so a null-inner ``wrb.fr`` only ever arrives on
+            # the server-side error channel. The first slot of ``item[5]`` is a
+            # gRPC-style status code: ``8`` (RESOURCE_EXHAUSTED) is the rate
+            # limit handled above; ``3`` (INVALID_ARGUMENT) is what an oversized
+            # request returns (``["wrb.fr", null, ..., [3]]``). Before this
+            # guard, every non-rate-limit status silently fell through to "no
+            # parseable chunks", masking real errors like the request-size
+            # ceiling — surface it instead (issue #1634).
             error_payload = frame.error_payload
             if error_payload is not None:
                 raise_if_rate_limited(error_payload)
+                _raise_chat_status_error_frame(error_payload)
             continue
 
         try:
@@ -428,6 +439,37 @@ def _raise_chat_error_frame(item: list) -> NoReturn:
         f"Chat request failed: the server returned an error frame{detail}. "
         "This usually means the request was rejected or the conversation "
         "could not be served; try again."
+    )
+
+
+def _raise_chat_status_error_frame(error_payload: list) -> NoReturn:
+    """Surface a non-rate-limit ``wrb.fr`` error payload as a ``ChatError``.
+
+    A streamed answer always carries a string ``inner_json``; a null-inner
+    ``wrb.fr`` frame is the server-side error channel, where ``error_payload``
+    (``item[5]``) leads with a gRPC-style status code. ``8``
+    (RESOURCE_EXHAUSTED) is the rate limit handled by
+    :func:`raise_if_rate_limited` before this call; the load-bearing case here
+    is ``3`` (INVALID_ARGUMENT), which an oversized request returns
+    (``["wrb.fr", null, ..., [3]]``). Such errors previously collapsed into the
+    generic ``ChatResponseParseError`` ("No parseable chunks …"), masking the
+    real cause (issue #1634). The status code is echoed; code ``3`` adds the
+    request-size hint since that is its common trigger.
+    """
+    code = ErrorPayloadRow(error_payload).status_code
+    if code == 3:
+        raise ChatError(
+            "Chat request failed: the server rejected it (status code 3, "
+            "INVALID_ARGUMENT). This usually means the request was too large — "
+            "the question, or the accumulated conversation history, exceeded the "
+            "server's size limit; shorten the question or start a new "
+            "conversation and try again."
+        )
+    detail = f" (status code {code!r})" if code is not None else ""
+    raise ChatError(
+        f"Chat request failed: the server returned an error{detail} with no "
+        "answer payload. The request was rejected or could not be served; "
+        "try again."
     )
 
 

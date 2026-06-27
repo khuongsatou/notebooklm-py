@@ -84,7 +84,7 @@ class TestFramePositionContract:
         ) == (0, 2, 2, 5)
 
     def test_error_payload_positions_pinned(self) -> None:
-        assert ErrorPayloadRow._ENTRIES_POS == 2
+        assert (ErrorPayloadRow._STATUS_CODE_POS, ErrorPayloadRow._ENTRIES_POS) == (0, 2)
 
     def test_text_leaf_positions_pinned(self) -> None:
         assert TextLeafRow._TEXT_POS == 2
@@ -325,6 +325,16 @@ class TestErrorPayloadRow:
     @pytest.mark.parametrize("entry", [[], [123], "x", None])
     def test_non_string_entry_type_is_none(self, entry: object) -> None:
         assert ErrorPayloadRow.entry_type(entry) is None
+
+    def test_status_code_reads_leading_slot(self) -> None:
+        # Rate-limit payload leads with 8 (RESOURCE_EXHAUSTED); the bare
+        # oversized-request payload is [3] (INVALID_ARGUMENT) — see issue #1634.
+        assert ErrorPayloadRow([8, None, [["x"]]]).status_code == 8
+        assert ErrorPayloadRow([3]).status_code == 3
+
+    @pytest.mark.parametrize("payload", [[], "x"])
+    def test_status_code_absent_or_non_list_is_none(self, payload: object) -> None:
+        assert ErrorPayloadRow(payload).status_code is None
 
 
 class TestTextLeafRow:

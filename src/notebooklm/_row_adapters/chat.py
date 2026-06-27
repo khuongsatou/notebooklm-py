@@ -450,13 +450,29 @@ class ErrorPayloadRow:
     """Typed view of a streamed-chat error payload (``item[5]``).
 
     Structure: ``[8, None, [["type.googleapis.com/.../UserDisplayableError", …]]]``.
-    Centralises the ``error_payload[2]`` and inner ``entry[0]`` reads so
-    ``raise_if_rate_limited`` stops open-coding them (issue #1491).
+    The leading slot is a gRPC-style status code (``8`` = RESOURCE_EXHAUSTED for
+    the rate limit, ``3`` = INVALID_ARGUMENT for an oversized request whose
+    payload is the bare ``[3]``). Centralises the ``error_payload[0]`` status,
+    ``error_payload[2]`` entries, and inner ``entry[0]`` reads so the chat error
+    handlers stop open-coding them (issues #1491, #1634).
     """
 
     _raw: list[Any] = field(repr=False)
 
+    _STATUS_CODE_POS: ClassVar[int] = 0
     _ENTRIES_POS: ClassVar[int] = 2
+
+    @property
+    def status_code(self) -> Any:
+        """Leading gRPC-style status code at ``error_payload[0]`` — ``None`` if absent.
+
+        A short or non-list payload yields ``None`` (no usable code); the slot
+        is read with a length guard, not ``safe_index`` — an error payload is
+        itself the failure signal, so a missing code is not schema drift.
+        """
+        if not isinstance(self._raw, list) or len(self._raw) <= self._STATUS_CODE_POS:
+            return None
+        return self._raw[self._STATUS_CODE_POS]
 
     @property
     def entries(self) -> list[Any]:
