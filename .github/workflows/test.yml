@@ -228,6 +228,13 @@ jobs:
           attempt=$((attempt + 1))
         done
 
+    - name: Assert curl_cffi imports (native wheel; no silent skip)
+      # The matrix installs --extra impersonate, so curl_cffi MUST import on every
+      # OS/Python. It's a native wheel: if it installs but fails to import, the
+      # importorskip'd curl_cffi suites would silently skip in the coverage run
+      # rather than fail. This makes a broken native import a hard error.
+      run: uv run python -c "import curl_cffi"
+
     - name: Get Playwright version
       id: playwright-version
       shell: bash
