@@ -37,6 +37,10 @@ DEFAULT_IMPERSONATE = "chrome"
 # Recognized values for NOTEBOOKLM_TRANSPORT; anything else (non-empty) is a typo.
 _KNOWN_TRANSPORTS = frozenset({"curl_cffi", "httpx"})
 
+# Streaming-upload fallbacks when the configured timeout doesn't pin one (seconds).
+_DEFAULT_CONNECT_TIMEOUT = 30
+_DEFAULT_STALL_TIMEOUT = 300
+
 # Headers that must not survive onto a Response rebuilt from already-decoded
 # bytes — same rationale as ``_streaming_post._STRIP_HEADERS_ON_REBUFFER``.
 _STRIP_HEADERS = frozenset({"content-encoding", "content-length"})
@@ -300,13 +304,18 @@ class CurlCffiAsyncClient:
         Returns the connect cap and a stall window. No *overall* cap is applied —
         a large upload that keeps progressing must not be killed — but a hung
         connection is bounded by a low-speed (stall) guard set to the stall window.
+        Both are floored to a non-zero default: libcurl treats ``LOW_SPEED_TIME=0``
+        as "disabled", which (with no overall cap) would let a hung upload hang
+        forever — so a ``0``/``None``/sub-second timeout must NOT disable the guard.
         """
-        t = self._timeout
-        if isinstance(t, tuple):  # (connect, read)
-            return int(t[0] or 30), int(t[1] or 300)
-        if isinstance(t, (int, float)):
-            return 30, int(t)
-        return 30, 300
+        timeout = self._timeout
+        if isinstance(timeout, tuple):  # (connect, read)
+            connect, read = timeout
+        elif isinstance(timeout, (int, float)):
+            connect, read = _DEFAULT_CONNECT_TIMEOUT, timeout
+        else:
+            connect, read = _DEFAULT_CONNECT_TIMEOUT, _DEFAULT_STALL_TIMEOUT
+        return (int(connect) or _DEFAULT_CONNECT_TIMEOUT, int(read) or _DEFAULT_STALL_TIMEOUT)
 
     async def stream_upload(
         self,
@@ -330,49 +339,60 @@ class CurlCffiAsyncClient:
 
         cookie_header = self._cookie_header_for(url)
         header_list = [f"{k}: {v}".encode() for k, v in headers.items()]
-        owns_handle = isinstance(source, (str, bytes, os.PathLike))  # a path we open
+        owns_handle = isinstance(source, (str, os.PathLike))  # a path we open
         connect_timeout, stall_timeout = self._connect_and_stall_timeouts()
 
         def _run() -> tuple[int, bytes]:
             # ``fh`` is Any: a path we open, or the caller's already-open binary file.
+            # Independent cleanup: the file (if we opened it) must close even if
+            # Curl() construction or curl.close() raises — hence nested try/finally,
+            # not one shared finally.
             if owns_handle:
                 fh: Any = open(cast("str | os.PathLike[str]", source), "rb")  # noqa: SIM115
             else:
                 fh = source
-            body = io.BytesIO()
-            curl = Curl()
             try:
-                curl.impersonate(self._impersonate)
-                curl.setopt(CurlOpt.URL, url.encode())
-                curl.setopt(CurlOpt.UPLOAD, 1)
-                curl.setopt(CurlOpt.CUSTOMREQUEST, method.encode())  # UPLOAD defaults to PUT
-                curl.setopt(CurlOpt.INFILESIZE_LARGE, total_bytes)
-                curl.setopt(CurlOpt.READFUNCTION, fh.read)  # libcurl pulls chunks from disk
-                curl.setopt(CurlOpt.HTTPHEADER, header_list)
-                if cookie_header:
-                    curl.setopt(CurlOpt.COOKIE, cookie_header.encode())
-                curl.setopt(CurlOpt.WRITEDATA, body)
-                curl.setopt(CurlOpt.CONNECTTIMEOUT, connect_timeout)
-                # No overall cap (large uploads keep progressing), but bound a hung
-                # connection: abort if throughput stays < 1 byte/s for the stall window.
-                curl.setopt(CurlOpt.LOW_SPEED_LIMIT, 1)
-                curl.setopt(CurlOpt.LOW_SPEED_TIME, stall_timeout)
-                curl.perform()
-                status_raw: Any = curl.getinfo(CurlInfo.RESPONSE_CODE)
-                return int(status_raw), body.getvalue()
+                body = io.BytesIO()
+                curl = Curl()
+                try:
+                    curl.impersonate(self._impersonate)
+                    curl.setopt(CurlOpt.URL, url.encode())
+                    curl.setopt(CurlOpt.UPLOAD, 1)
+                    curl.setopt(CurlOpt.CUSTOMREQUEST, method.encode())  # UPLOAD defaults to PUT
+                    curl.setopt(CurlOpt.INFILESIZE_LARGE, total_bytes)
+                    curl.setopt(CurlOpt.READFUNCTION, fh.read)  # libcurl pulls chunks from disk
+                    curl.setopt(CurlOpt.HTTPHEADER, header_list)
+                    if cookie_header:
+                        curl.setopt(CurlOpt.COOKIE, cookie_header.encode())
+                    curl.setopt(CurlOpt.WRITEDATA, body)
+                    curl.setopt(CurlOpt.CONNECTTIMEOUT, connect_timeout)
+                    # No overall cap (large uploads keep progressing), but bound a hung
+                    # connection: abort if throughput stays < 1 byte/s for the stall window.
+                    curl.setopt(CurlOpt.LOW_SPEED_LIMIT, 1)
+                    curl.setopt(CurlOpt.LOW_SPEED_TIME, stall_timeout)
+                    curl.perform()
+                    status_raw: Any = curl.getinfo(CurlInfo.RESPONSE_CODE)
+                    return int(status_raw), body.getvalue()
+                finally:
+                    curl.close()
             finally:
-                curl.close()
                 if owns_handle:
                     fh.close()
 
-        # Shield the worker: a thread can't be cancelled, so if this coroutine is
-        # cancelled we let perform() finish rather than orphan a live authenticated
-        # upload, then propagate the cancellation.
+        # A thread can't be cancelled, so if this coroutine is cancelled we drain
+        # the worker to completion (re-shielding through repeated cancellations)
+        # rather than orphan a live authenticated upload, then propagate the cancel.
         task = asyncio.ensure_future(asyncio.to_thread(_run))
         try:
             status, content = await asyncio.shield(task)
         except asyncio.CancelledError:
-            await asyncio.gather(task, return_exceptions=True)
+            while not task.done():
+                try:
+                    await asyncio.shield(task)
+                except asyncio.CancelledError:
+                    continue  # cancelled again — keep draining
+                except BaseException:  # noqa: BLE001 — worker finished (with error); done draining
+                    break
             raise
         except CurlError as exc:  # low-level Curl raises CurlError (RequestsError subclasses it)
             raise httpx.RequestError(str(exc), request=httpx.Request(method, url)) from exc

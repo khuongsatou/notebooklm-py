@@ -62,6 +62,15 @@ class _Handler(BaseHTTPRequestHandler):
     def do_POST(self):  # noqa: N802
         length = int(self.headers.get("Content-Length", 0))
         data = self.rfile.read(length)
+        if self.path == "/slow":
+            import time
+
+            time.sleep(0.4)  # let the client cancel mid-flight
+            self.send_response(200)
+            self.send_header("Content-Length", "2")
+            self.end_headers()
+            self.wfile.write(b"ok")
+            return
         if self.path == "/boom":
             self.send_response(503)
             self.end_headers()
@@ -291,6 +300,87 @@ async def test_stream_upload_streams_from_disk(server, tmp_path):
             )
             assert fh.closed is False  # caller owns it
         assert r2.content == b"echo:" + payload
+    finally:
+        await client.aclose()
+
+
+async def test_stream_upload_error_status_returns_raisable_response(server, tmp_path):
+    """A 5xx from the upload endpoint comes back as a Response the caller can raise on."""
+    p = tmp_path / "b.bin"
+    p.write_bytes(b"data")
+    client = CurlCffiAsyncClient(cookies=httpx.Cookies())
+    try:
+        r = await client.stream_upload(f"{server}/boom", p, total_bytes=4, headers={})
+        assert r.status_code == 503
+        with pytest.raises(httpx.HTTPStatusError):
+            r.raise_for_status()
+    finally:
+        await client.aclose()
+
+
+async def test_stream_upload_connection_error_maps_to_request_error(tmp_path):
+    """A connection failure in the low-level path maps to httpx.RequestError (not CurlError)."""
+    import socket
+
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    base = f"http://127.0.0.1:{s.getsockname()[1]}"
+    s.close()
+    p = tmp_path / "b.bin"
+    p.write_bytes(b"data")
+    client = CurlCffiAsyncClient(cookies=httpx.Cookies(), timeout=2.0)
+    try:
+        with pytest.raises(httpx.RequestError):
+            await client.stream_upload(f"{base}/up", p, total_bytes=4, headers={})
+    finally:
+        await client.aclose()
+
+
+async def test_connect_and_stall_timeouts_never_zero():
+    """The stall guard is never disabled — a 0/None/sub-second timeout floors to defaults."""
+    cases = [
+        (0, (30, 300)),
+        (None, (30, 300)),
+        (httpx.Timeout(0, read=0), (30, 300)),
+        (httpx.Timeout(5.0, read=120.0), (5, 120)),
+    ]
+    for to, expected in cases:
+        client = CurlCffiAsyncClient(cookies=httpx.Cookies(), timeout=to)
+        try:
+            assert client._connect_and_stall_timeouts() == expected
+        finally:
+            await client.aclose()
+
+
+async def test_stream_upload_drains_worker_on_cancel(server, tmp_path):
+    """Cancelling stream_upload propagates CancelledError but drains the worker (no orphan)."""
+    import asyncio
+
+    p = tmp_path / "b.bin"
+    p.write_bytes(b"x" * 100)
+    client = CurlCffiAsyncClient(cookies=httpx.Cookies())
+    try:
+        task = asyncio.ensure_future(
+            client.stream_upload(f"{server}/slow", p, total_bytes=100, headers={})
+        )
+        await asyncio.sleep(0.1)  # let it reach perform()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task  # propagates only after the worker drains (~0.4s server sleep)
+    finally:
+        await client.aclose()  # would hang/error if the worker were orphaned
+
+
+async def test_cookie_header_for_filters_by_domain():
+    """_cookie_header_for sends only cookies matching the upload host."""
+    cookies = httpx.Cookies()
+    cookies.set("SID", "g", domain=".google.com")
+    cookies.set("OTHER", "x", domain=".example.com")
+    client = CurlCffiAsyncClient(cookies=cookies)
+    try:
+        hdr = client._cookie_header_for("https://notebooklm.google.com/upload/_/")
+        assert "SID=g" in hdr
+        assert "OTHER" not in hdr  # different domain not sent
     finally:
         await client.aclose()
 
