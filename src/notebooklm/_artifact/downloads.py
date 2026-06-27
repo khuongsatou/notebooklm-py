@@ -806,6 +806,10 @@ class ArtifactDownloadService:
             timeout = httpx.Timeout(connect=10.0, read=30.0, write=30.0, pool=30.0)
 
             try:
+                # Transport selection is inlined here (rather than via
+                # _make_download_client) because the httpx path below streams to
+                # disk via the producer/consumer writer queue; _make_download_client
+                # returns a buffering GET suited to download_urls_batch.
                 factory = resolve_transport_factory()
                 if factory is not httpx.AsyncClient:
                     # curl_cffi opt-in: libcurl's internal redirect loop can't host

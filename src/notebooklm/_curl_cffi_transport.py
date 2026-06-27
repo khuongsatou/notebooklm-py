@@ -279,6 +279,9 @@ class CurlCffiAsyncClient:
         from curl_cffi.requests import RequestsError
 
         timeout = self._timeout_for(kwargs)
+        # We hardcode allow_redirects=False and follow manually; drop any
+        # caller-supplied follow_redirects so it can't collide with that.
+        kwargs.pop("follow_redirects", None)
         current = url
         for _ in range(max_redirects + 1):
             parsed = urlparse(current)

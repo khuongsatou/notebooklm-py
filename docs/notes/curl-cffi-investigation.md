@@ -1,8 +1,10 @@
 # Investigation: curl_cffi as an httpx replacement / alternative
 
-**Status:** investigation only — no code changed in `src/`. "Just in case" feasibility study.
+**Status:** SHIPPED (opt-in) — the feasibility study below led to a working opt-in transport
+behind `NOTEBOOKLM_TRANSPORT=curl_cffi` (see §10–§12 for the as-built design). The early
+sections preserve the original investigation; treat §10+ as the source of truth for current behavior.
 **Date:** 2026-06-26 · **Branch:** `investigate/curl-cffi`
-**curl_cffi latest:** 0.15.0 (PyPI) · **httpx today:** the sole transport.
+**curl_cffi latest:** 0.15.0 (PyPI) · **httpx:** remains the default transport.
 
 ## 1. Why consider it
 
