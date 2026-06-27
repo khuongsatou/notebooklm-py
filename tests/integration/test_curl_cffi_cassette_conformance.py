@@ -25,6 +25,7 @@ from __future__ import annotations
 import gzip
 import json
 import threading
+from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
@@ -66,6 +67,17 @@ def _real_recorded_bodies(limit: int = 4) -> list[tuple[str, bytes]]:
 
 
 _BODIES = _real_recorded_bodies()
+
+
+def test_conformance_guard_is_not_inert():
+    """Fail LOUD (not silent-skip) if no cassette bodies were sourced.
+
+    The gzip tests below ``skipif(not _BODIES)`` so they don't error in a
+    cassette-less checkout — but this file's whole point is regression-guarding
+    the gzip-decode bug, so an empty ``_BODIES`` (cassettes moved/renamed) must
+    surface as a failure here, not a green skip.
+    """
+    assert _BODIES, "no bodies sourced from tests/cassettes/ — gzip conformance guard is inert"
 
 
 class _GzipHandler(BaseHTTPRequestHandler):
@@ -115,12 +127,23 @@ class _EchoRequestHandler(BaseHTTPRequestHandler):
         self.wfile.write(out)
 
 
-def _serve(handler):
+@contextmanager
+def _local_server(handler):
+    """Run ``handler`` on a background HTTP server, yield its base URL, then tear down.
+
+    Full teardown (stop loop, join thread, close socket) avoids handle/thread leaks
+    across the per-test servers (flaky on Windows otherwise).
+    """
     httpd = HTTPServer(("127.0.0.1", 0), handler)
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
     host, port = httpd.server_address
-    return httpd, thread, f"http://{host}:{port}"
+    try:
+        yield f"http://{host}:{port}"
+    finally:
+        httpd.shutdown()
+        thread.join(timeout=5)
+        httpd.server_close()
 
 
 @pytest.mark.skipif(not _BODIES, reason="no cassettes available to source bodies from")
@@ -128,24 +151,21 @@ def _serve(handler):
 async def test_gzip_recorded_body_decodes_identically(name, body):
     """A real recorded body, served gzip'd, decodes identically via curl_cffi and httpx."""
     _GzipHandler.payload = body
-    httpd, thread, url = _serve(_GzipHandler)
-    curl = CurlCffiAsyncClient(cookies=httpx.Cookies())
-    httpx_client = httpx.AsyncClient()
-    try:
-        curl_resp = await stream_post_with_size_cap(curl, f"{url}/rpc", body=b"x", headers=None)
-        httpx_resp = await stream_post_with_size_cap(
-            httpx_client, f"{url}/rpc", body=b"x", headers=None
-        )
-        # Both must auto-decompress to the ORIGINAL body, and agree with each other.
-        assert curl_resp.content == body, f"curl_cffi mis-decoded {name}"
-        assert curl_resp.content == httpx_resp.content, f"curl_cffi != httpx for {name}"
-        assert curl_resp.status_code == httpx_resp.status_code == 200
-    finally:
-        await curl.aclose()
-        await httpx_client.aclose()
-        httpd.shutdown()
-        thread.join(timeout=5)
-        httpd.server_close()
+    with _local_server(_GzipHandler) as url:
+        curl = CurlCffiAsyncClient(cookies=httpx.Cookies())
+        httpx_client = httpx.AsyncClient()
+        try:
+            curl_resp = await stream_post_with_size_cap(curl, f"{url}/rpc", body=b"x", headers=None)
+            httpx_resp = await stream_post_with_size_cap(
+                httpx_client, f"{url}/rpc", body=b"x", headers=None
+            )
+            # Both must auto-decompress to the ORIGINAL body, and agree with each other.
+            assert curl_resp.content == body, f"curl_cffi mis-decoded {name}"
+            assert curl_resp.content == httpx_resp.content, f"curl_cffi != httpx for {name}"
+            assert curl_resp.status_code == httpx_resp.status_code == 200
+        finally:
+            await curl.aclose()
+            await httpx_client.aclose()
 
 
 @pytest.mark.skipif(not _BODIES, reason="no cassettes available to source bodies from")
@@ -155,50 +175,44 @@ async def test_get_download_decodes_identically(name, body):
     identically to httpx. (Artifact downloads themselves deliberately stay on httpx
     for the #1521 SSRF host-allowlist hook; this covers the transport's GET primitive.)"""
     _GzipHandler.payload = body
-    httpd, thread, url = _serve(_GzipHandler)
-    curl = CurlCffiAsyncClient(cookies=httpx.Cookies())
-    httpx_client = httpx.AsyncClient()
-    try:
-        curl_resp = await curl.get(f"{url}/download")
-        httpx_resp = await httpx_client.get(f"{url}/download")
-        assert curl_resp.content == body, f"curl_cffi GET mis-decoded {name}"
-        assert curl_resp.content == httpx_resp.content
-    finally:
-        await curl.aclose()
-        await httpx_client.aclose()
-        httpd.shutdown()
-        thread.join(timeout=5)
-        httpd.server_close()
+    with _local_server(_GzipHandler) as url:
+        curl = CurlCffiAsyncClient(cookies=httpx.Cookies())
+        httpx_client = httpx.AsyncClient()
+        try:
+            curl_resp = await curl.get(f"{url}/download")
+            httpx_resp = await httpx_client.get(f"{url}/download")
+            assert curl_resp.content == body, f"curl_cffi GET mis-decoded {name}"
+            assert curl_resp.content == httpx_resp.content
+        finally:
+            await curl.aclose()
+            await httpx_client.aclose()
 
 
 async def test_request_carry_matches_httpx():
     """curl_cffi forwards the same auth-relevant request (cookies/content-type/body) as httpx."""
     jar = httpx.Cookies()
     jar.set("SID", "secret", domain="127.0.0.1")  # match the local server host so it's sent
-    httpd, thread, url = _serve(_EchoRequestHandler)
-    curl = CurlCffiAsyncClient(cookies=httpx.Cookies(jar))
-    httpx_client = httpx.AsyncClient(cookies=httpx.Cookies(jar))
     headers = {
         "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
         "x-goog-upload-command": "upload",
     }
-    try:
-        curl_seen = json.loads(
-            (await curl.post(f"{url}/up", headers=headers, content=b"f.req=1")).text
-        )
-        httpx_seen = json.loads(
-            (await httpx_client.post(f"{url}/up", headers=headers, content=b"f.req=1")).text
-        )
-        # The transport must carry the body + auth-relevant headers identically.
-        assert curl_seen["body"] == httpx_seen["body"] == "f.req=1"
-        assert curl_seen["content_type"] == httpx_seen["content_type"]
-        assert curl_seen["x_goog"] == httpx_seen["x_goog"] == "upload"
-        # Cookie may be ordered/formatted differently; assert the value is present in both.
-        assert "SID=secret" in curl_seen["cookie"]
-        assert "SID=secret" in httpx_seen["cookie"]
-    finally:
-        await curl.aclose()
-        await httpx_client.aclose()
-        httpd.shutdown()
-        thread.join(timeout=5)
-        httpd.server_close()
+    with _local_server(_EchoRequestHandler) as url:
+        curl = CurlCffiAsyncClient(cookies=httpx.Cookies(jar))
+        httpx_client = httpx.AsyncClient(cookies=httpx.Cookies(jar))
+        try:
+            curl_seen = json.loads(
+                (await curl.post(f"{url}/up", headers=headers, content=b"f.req=1")).text
+            )
+            httpx_seen = json.loads(
+                (await httpx_client.post(f"{url}/up", headers=headers, content=b"f.req=1")).text
+            )
+            # The transport must carry the body + auth-relevant headers identically.
+            assert curl_seen["body"] == httpx_seen["body"] == "f.req=1"
+            assert curl_seen["content_type"] == httpx_seen["content_type"]
+            assert curl_seen["x_goog"] == httpx_seen["x_goog"] == "upload"
+            # Cookie may be ordered/formatted differently; assert the value is present in both.
+            assert "SID=secret" in curl_seen["cookie"]
+            assert "SID=secret" in httpx_seen["cookie"]
+        finally:
+            await curl.aclose()
+            await httpx_client.aclose()
