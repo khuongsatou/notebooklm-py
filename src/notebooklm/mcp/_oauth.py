@@ -25,18 +25,28 @@ Design (converged review — codex/claude/agy):
 Hardening: strong-password startup check (primary brute-force defense), per-IP login
 throttle, capped DCR + capped pending-stash (pre-auth DoS), and atomic file persistence
 of clients+tokens (reusing ``_atomic_io``) so a redeploy doesn't force re-auth.
+
+Accepted residuals (reviewed, acceptable for a single-user connector): (a) login-CSRF/
+phishing — an attacker who registers their own client and phishes the owner into
+entering the password on the attacker's ``/login`` link could authorize that client;
+the owner only ever logs in from claude.ai's own flow, so this is phishing-class. (b)
+A flood of pre-auth ``/authorize`` calls (open DCR) can briefly fill the bounded
+pending-stash and make the OWNER's login return ``temporarily_unavailable`` until the
+~300s TTL drains; only the (rare) login flow is affected — an established session keeps
+working. Both are low-severity here and bounded by the strong password + throwaway account.
 """
 
 from __future__ import annotations
 
 import hashlib
 import hmac
+import html
 import json
 import logging
 import os
 import secrets
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from fastmcp.server.auth import AuthProvider
@@ -91,9 +101,12 @@ THROTTLE_MAX_FAILURES = 5
 class OAuthConfig:
     """Resolved + validated self-hosted-OAuth config."""
 
-    password: str
-    base_url: str
-    state_path: Path | None  # where to persist clients+tokens; None → no persistence
+    # repr=False so the cleartext password never lands in an exception/debug dump of
+    # the config object (the provider keeps only a digest; this object must hold the
+    # cleartext to construct it, so keep it out of repr).
+    password: str = field(repr=False)
+    base_url: str = field(repr=True)
+    state_path: Path | None = field(default=None)  # persist target; None → no persistence
 
 
 def get_oauth_config() -> OAuthConfig | None:
@@ -140,7 +153,11 @@ def get_oauth_config() -> OAuthConfig | None:
 
 def _client_ip(request: Request) -> str:
     """Best-effort client IP for per-IP throttling. Behind the Cloudflare tunnel the
-    real client is in ``CF-Connecting-IP``; fall back to the socket peer."""
+    real client is in ``CF-Connecting-IP`` (Cloudflare sets it authoritatively, and the
+    tunnel admits no direct origin traffic, so it can't be spoofed in the intended
+    deploy). Falls back to the socket peer. CAVEAT: if the origin is exposed directly
+    (no tunnel/proxy), a client could spoof ``CF-Connecting-IP`` to dodge the throttle —
+    but the throttle is only secondary; the strong-password check is the real wall."""
     cf = request.headers.get("cf-connecting-ip")
     if cf:
         return cf.strip()
@@ -248,23 +265,31 @@ class SelfHostedOAuthProvider(InMemoryOAuthProvider):
         return RedirectResponse(redirect, status_code=302, headers={"Cache-Control": "no-store"})
 
     def _render_form(self, sid: str, *, error: str = "") -> HTMLResponse:
-        # create_secure_html_response sets CSP + X-Frame-Options: DENY; the only dynamic
-        # value is `sid` (our own opaque token) and `error` (our own literal strings) —
-        # nothing attacker-controlled is reflected.
-        err = f'<p style="color:#c00">{error}</p>' if error else ""
+        # `sid` on a GET comes from the URL query (attacker-controllable), so it MUST be
+        # HTML-escaped before it's reflected into the value="" attribute — otherwise
+        # /login?sid="><script>... is a reflected XSS. `error` is our own literal, escaped
+        # for good measure. create_secure_html_response adds X-Frame-Options: DENY; we add
+        # a strict CSP (no scripts; inline styles only; form posts same-origin) as
+        # defense-in-depth so even a reflection slip can't execute script.
+        safe_sid = html.escape(sid, quote=True)
+        err = f'<p style="color:#c00">{html.escape(error)}</p>' if error else ""
         body = (
             "<h2>NotebookLM connector</h2>"
             "<p>Enter the connector password to authorize this client.</p>"
             f"{err}"
             '<form method="post" action="login">'
-            f'<input type="hidden" name="sid" value="{sid}">'
+            f'<input type="hidden" name="sid" value="{safe_sid}">'
             '<input type="password" name="password" autofocus required '
             'style="font-size:1.1em;padding:.4em;width:20em">'
             '<button type="submit" style="font-size:1.1em;padding:.4em 1em;margin-left:.5em">Sign in</button>'
             "</form>"
         )
         status = 401 if error else 200
-        return create_secure_html_response(body, status_code=status)
+        resp = create_secure_html_response(body, status_code=status)
+        resp.headers["Content-Security-Policy"] = (
+            "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'"
+        )
+        return resp
 
     # -- throttle --------------------------------------------------------------
     def _throttled(self, ip: str) -> int | None:
@@ -330,6 +355,8 @@ class SelfHostedOAuthProvider(InMemoryOAuthProvider):
             return
         try:
             data = json.loads(self._state_path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                raise ValueError("oauth_state.json top level is not an object")
             self.clients = {
                 k: OAuthClientInformationFull.model_validate(v)
                 for k, v in data.get("clients", {}).items()
@@ -342,9 +369,10 @@ class SelfHostedOAuthProvider(InMemoryOAuthProvider):
             }
             self._access_to_refresh_map = dict(data.get("a2r", {}))
             self._refresh_to_access_map = dict(data.get("r2a", {}))
-        except (OSError, ValueError, KeyError) as exc:
-            # A malformed/truncated file must NOT be a hard startup failure — just start
-            # empty (claude.ai re-registers + you re-login).
+        except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+            # A malformed/truncated/wrong-shape file must NOT be a hard startup failure
+            # (a valid-JSON non-dict makes `.get`/`.items` raise AttributeError/TypeError;
+            # ValidationError ⊂ ValueError) — just start empty (re-register + re-login).
             logger.warning(
                 "Ignoring unreadable OAuth state %s (re-auth required): %s", self._state_path, exc
             )

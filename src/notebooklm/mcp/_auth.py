@@ -117,7 +117,8 @@ def build_auth(token: str | None, oauth: AuthProvider | None) -> AuthProvider | 
     * bearer + oauth → ``MultiAuth`` (claude.ai uses OAuth, Claude Code the bearer;
       the bearer is a verifier, so a non-OAuth token misses the OAuth lookup locally
       and falls through — no network).
-    * one of them → that one. * neither → ``None`` (loopback dev).
+    * one of them → that one.
+    * neither → ``None`` (loopback dev).
 
     IdP-agnostic: ``oauth`` is any ``AuthProvider`` (here the self-hosted OAuth server).
     """

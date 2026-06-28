@@ -31,6 +31,7 @@ from notebooklm.mcp._oauth import (  # noqa: E402
     OAUTH_BASE_URL_ENV,
     OAUTH_PASSWORD_ENV,
     THROTTLE_MAX_FAILURES,
+    OAuthConfig,
     SelfHostedOAuthProvider,
     get_oauth_config,
 )
@@ -229,3 +230,27 @@ def test_end_to_end_and_persistence(tmp_path) -> None:
     p2 = _provider(tmp_path)
     assert "c1" in p2.clients
     assert asyncio.run(p2.verify_token(access_token)) is not None
+
+
+# --------------------------------------------------------------------------- hardening (polish)
+def test_oauth_config_repr_hides_password() -> None:
+    cfg = OAuthConfig(password="super-secret-do-not-log", base_url="https://h", state_path=None)
+    assert "super-secret-do-not-log" not in repr(cfg)
+
+
+def test_login_form_escapes_reflected_sid() -> None:
+    """`sid` on a GET comes from the URL (attacker-controllable) → must be escaped, and a
+    strict CSP must be set, so /login?sid=<payload> is not a reflected XSS."""
+    p = _provider()
+    with TestClient(Starlette(routes=p.get_routes())) as c:
+        r = c.get('/login?sid="><script>alert(1)</script>')
+    assert "<script>alert(1)</script>" not in r.text  # escaped, not injected
+    assert "content-security-policy" in {k.lower() for k in r.headers}
+
+
+@pytest.mark.parametrize("blob", ["[1, 2, 3]", '"a string"', "not json at all", "{bad", ""])
+def test_malformed_state_file_does_not_crash(tmp_path, blob: str) -> None:
+    """A truncated / wrong-shape oauth_state.json must start empty, never crash startup."""
+    (tmp_path / "oauth_state.json").write_text(blob)
+    p = _provider(tmp_path)  # must not raise
+    assert p.clients == {}
