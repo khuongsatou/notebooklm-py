@@ -10,8 +10,11 @@ Flow (proven against the live API in the #1638 spike):
       --MergeSession-->    SID/SAPISID/__Secure-1PSID/... cookie jar
 
 The minted jar authorizes the existing web client (batchexecute, upload,
-download). It lacks ``__Secure-1PSIDTS``; the standard inline recovery mints
-that on first load from ``SID`` + ``APISID``/``SAPISID`` (secondary binding).
+download). After MergeSession the mint also fires one ``RotateCookies`` POST to
+add ``__Secure-1PSIDTS`` (the rotating freshness partner of ``__Secure-1PSID``),
+so the stored jar is complete at rest. That POST is best-effort — if Google
+withholds it, the standard inline recovery still mints it on first load from
+``SID`` + ``APISID``/``SAPISID`` (secondary binding).
 
 SECURITY: the master token is full-account, durable, infostealer-grade — use a
 dedicated/throwaway account only. Never log the oauth_token, master token, ya29,
@@ -172,6 +175,27 @@ async def mint_cookies(email: str, master_token: str, android_id: str) -> httpx.
                 },
                 headers=auth,
             )
+            # Mint __Secure-1PSIDTS now too (the rotating freshness partner of
+            # __Secure-1PSID) so the stored jar is complete and valid at rest — no
+            # first-call recovery needed and `auth check` passes immediately. This
+            # is the same RotateCookies POST the keepalive/inline recovery use; it
+            # needs the SID + APISID/SAPISID binding the MergeSession jar already
+            # carries. Best-effort: Google may withhold it, and inline recovery
+            # remains the fallback, so a failure here must not fail the mint.
+            from .keepalive import (  # noqa: PLC0415 (low-level; avoid import cycle)
+                _KEEPALIVE_ROTATE_BODY,
+                _KEEPALIVE_ROTATE_HEADERS,
+                KEEPALIVE_ROTATE_URL,
+            )
+
+            try:
+                await client.post(
+                    KEEPALIVE_ROTATE_URL,
+                    headers=_KEEPALIVE_ROTATE_HEADERS,
+                    content=_KEEPALIVE_ROTATE_BODY,
+                )
+            except httpx.HTTPError as exc:
+                logger.debug("RotateCookies during mint failed (non-fatal): %s", exc)
             jar = httpx.Cookies()
             for cookie in client.cookies.jar:
                 jar.jar.set_cookie(cookie)

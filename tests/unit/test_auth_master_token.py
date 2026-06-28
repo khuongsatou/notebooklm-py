@@ -19,6 +19,7 @@ from notebooklm._auth.master_token import MasterTokenError
 
 _OAUTHLOGIN_RE = re.compile(r"^https://accounts\.google\.com/OAuthLogin")
 _MERGESESSION_RE = re.compile(r"^https://accounts\.google\.com/MergeSession")
+_ROTATE_RE = re.compile(r"^https://accounts\.google\.com/RotateCookies")
 
 
 @pytest.fixture
@@ -60,6 +61,7 @@ def test_exchange_master_token_no_secret_in_error(fake_gpsoauth):
 # --- mint_cookies ----------------------------------------------------------
 
 
+@pytest.mark.no_default_keepalive_mock  # own the RotateCookies response (mint PSIDTS)
 @pytest.mark.asyncio
 async def test_mint_cookies_success_and_call_order(fake_gpsoauth, httpx_mock):
     httpx_mock.add_response(url=_OAUTHLOGIN_RE, text="APh-UBERAUTH")
@@ -67,13 +69,19 @@ async def test_mint_cookies_success_and_call_order(fake_gpsoauth, httpx_mock):
         url=_MERGESESSION_RE,
         headers=_merge_session_cookies("SID", "APISID", "SAPISID", "HSID"),
     )
+    # RotateCookies mints __Secure-1PSIDTS into the same jar so it's complete.
+    httpx_mock.add_response(
+        url=_ROTATE_RE,
+        headers=_merge_session_cookies("__Secure-1PSIDTS"),
+    )
     jar = await mt.mint_cookies("e@x.com", "aas_et/MASTER", "abc")
     names = {c.name for c in jar.jar}
-    assert {"SID", "APISID", "SAPISID"} <= names
-    # OAuthLogin must precede MergeSession.
+    assert {"SID", "APISID", "SAPISID", "__Secure-1PSIDTS"} <= names
+    # OAuthLogin -> MergeSession -> RotateCookies (POST), in order.
     reqs = httpx_mock.get_requests()
     assert "OAuthLogin" in str(reqs[0].url)
     assert "MergeSession" in str(reqs[1].url)
+    assert "RotateCookies" in str(reqs[2].url) and reqs[2].method == "POST"
     # uberauth was forwarded to MergeSession.
     assert "APh-UBERAUTH" in str(reqs[1].url)
 
@@ -100,6 +108,8 @@ async def test_mint_cookies_missing_required_cookie(fake_gpsoauth, httpx_mock):
         url=_MERGESESSION_RE,
         headers=_merge_session_cookies("SID"),
     )
+    # RotateCookies still fires after MergeSession; the autouse keepalive mock
+    # answers it, so the required-cookie check is what raises.
     with pytest.raises(MasterTokenError, match="missing required cookies"):
         await mt.mint_cookies("e@x.com", "aas_et/MASTER", "abc")
 
