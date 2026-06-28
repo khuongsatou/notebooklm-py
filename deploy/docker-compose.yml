@@ -25,6 +25,10 @@ services:
     user: "${NOTEBOOKLM_UID:-1000}:${NOTEBOOKLM_GID:-1000}"
     environment:
       # Bearer token clients must present (Authorization: Bearer ...). Env-only.
+      # REQUIRED for the Docker path even when WorkOS OAuth is also configured —
+      # OAuth is layered ON TOP of the bearer (Claude Code/Desktop use the bearer,
+      # claude.ai uses OAuth). For an OAuth-ONLY deploy with no bearer, drop this
+      # `:?` guard and rely on the server's own fail-closed auth check.
       NOTEBOOKLM_MCP_TOKEN: ${NOTEBOOKLM_MCP_TOKEN:?set NOTEBOOKLM_MCP_TOKEN in .env}
       # Binds 0.0.0.0 (for the cloudflared sidecar) → makes the token MANDATORY.
       NOTEBOOKLM_MCP_ALLOW_EXTERNAL_BIND: "1"

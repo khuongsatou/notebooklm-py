@@ -108,6 +108,11 @@ leave it unconfigured to stay bearer-only (Claude Code/Desktop keep working).
 > user could reach your account, so it is **mandatory** whenever OAuth is enabled.
 > (You may see an `authlib.jose` deprecation line from FastMCP on startup — harmless.)
 
+> **The default compose still requires `NOTEBOOKLM_MCP_TOKEN`** — OAuth is layered on
+> top of the bearer (so Claude Code/Desktop keep working). For an **OAuth-only** deploy
+> with no bearer, drop the `:?` guard on `NOTEBOOKLM_MCP_TOKEN` in `docker-compose.yml`;
+> the server's own fail-closed check still requires bearer *or* OAuth on a network bind.
+
 ## Notes & security
 - **Two auth layers.** The `NOTEBOOKLM_MCP_TOKEN` bearer gates *who can use the
   endpoint*; the master token authenticates *the server to Google*. The master

@@ -25,6 +25,21 @@ pytest.importorskip("fastmcp")
 from notebooklm.mcp import __main__ as entry  # noqa: E402 - after importorskip guard
 
 
+@pytest.fixture(autouse=True)
+def _clear_oauth_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``main()`` now reads the WorkOS AuthKit env on every HTTP run, so clear it by
+    default — an ambient developer/CI environment with ``NOTEBOOKLM_MCP_AUTHKIT_*``
+    set must not perturb these bearer-focused tests. The OAuth tests set the vars
+    explicitly (after this autouse cleanup runs)."""
+    for var in (
+        "NOTEBOOKLM_MCP_AUTHKIT_DOMAIN",
+        "NOTEBOOKLM_MCP_AUTHKIT_CLIENT_ID",
+        "NOTEBOOKLM_MCP_AUTHKIT_BASE_URL",
+        "NOTEBOOKLM_MCP_ALLOWED_EMAILS",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+
 def test_help_exits_zero(capsys: pytest.CaptureFixture[str]) -> None:
     """``main(["--help"])`` prints argparse help and exits 0."""
     with pytest.raises(SystemExit) as excinfo:
