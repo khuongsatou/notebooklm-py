@@ -26,13 +26,23 @@ Hardening: strong-password startup check (primary brute-force defense), per-IP l
 throttle, capped DCR + capped pending-stash (pre-auth DoS), and atomic file persistence
 of clients+tokens (reusing ``_atomic_io``) so a redeploy doesn't force re-auth.
 
-Residuals (low-severity, single-user; mitigated): login-CSRF/phishing — an attacker who
-registers their own client and phishes the owner into entering the password on the
-attacker's ``/login`` link could authorize that client. The ``/login`` page shows the
-(escaped) redirect target so a rogue client is noticeable before the password is typed,
-and the owner only logs in from claude.ai's own flow — phishing-class, bounded by the
-strong password + throwaway account. (A pre-auth ``/authorize`` flood can no longer block
-the owner's login: the pending-stash evicts oldest rather than rejecting.)
+Residuals (low-severity, single-user; reviewed by a security panel — all Low/Info, no
+account-compromise without phishing a human or pre-owning the disk, which already
+exposes the co-located full-account ``master_token.json``):
+
+* login-CSRF/phishing — an attacker who registers their own client (open DCR) and
+  phishes the owner into entering the password on the attacker's ``/login`` link could
+  authorize that client. The ``/login`` page shows the (escaped) redirect target so a
+  rogue client is noticeable before the password is typed, and the owner only logs in
+  from claude.ai's own flow — phishing-class, bounded by the strong password.
+* ``/authorize`` flood vs the owner's login — eviction (oldest-first) keeps the
+  owner's authorize from being *rejected*, but a sustained pre-auth flood can still
+  evict the owner's idle in-flight ``sid`` BEFORE they submit the password ("login link
+  expired"); the owner simply retries. Availability-only; bounded by the 300s TTL.
+* persisted tokens — refresh tokens are long-lived and written (0600) to
+  ``oauth_state.json``; treat that file as a FULL-ACCOUNT secret (same tier as
+  ``master_token.json``). Real revocation = delete ``oauth_state.json`` + restart;
+  rotating ``NOTEBOOKLM_MCP_OAUTH_PASSWORD`` does NOT revoke already-issued tokens.
 """
 
 from __future__ import annotations
@@ -50,6 +60,7 @@ from pathlib import Path
 from typing import NamedTuple
 from urllib.parse import urlsplit
 
+import anyio
 from fastmcp.server.auth import AuthProvider
 from fastmcp.server.auth.providers.in_memory import InMemoryOAuthProvider
 from fastmcp.utilities.ui import create_secure_html_response
@@ -196,6 +207,10 @@ class SelfHostedOAuthProvider(InMemoryOAuthProvider):
         # the constant-time compare.
         self.__salt = secrets.token_bytes(16)
         self.__pw_digest = self._kdf(password)
+        # Bound concurrent scrypt computations: each is ~tens of ms + ~16-64MB, and the
+        # /login POST is unauthenticated, so cap how many run at once (≤4 ⇒ ≤256MB) and
+        # run them OFF the event loop so a burst can't stall request servicing.
+        self._kdf_limiter = anyio.CapacityLimiter(4)
         self._state_path = state_path
         # sid -> _Pending(client, validated params, expiry_ts, attempts). Pre-auth + bounded.
         self._pending: dict[str, _Pending] = {}
@@ -219,10 +234,19 @@ class SelfHostedOAuthProvider(InMemoryOAuthProvider):
     async def register_client(self, client_info: OAuthClientInformationFull) -> None:
         # Cap only NEW registrations so RFC 7591 updates to an existing client still work.
         if client_info.client_id not in self.clients and len(self.clients) >= MAX_CLIENTS:
-            raise RegistrationError(
-                error="invalid_client_metadata",
-                error_description="Client registration limit reached.",
-            )
+            # DCR is open, so DON'T let a flood of throwaway registrations permanently
+            # block the owner's onboarding: evict a TOKEN-LESS client (registered but
+            # never completed a token exchange) to make room. Only if every client is
+            # actively token-holding do we reject (real capacity, not an attack).
+            used = {t.client_id for t in self.access_tokens.values()}
+            used |= {t.client_id for t in self.refresh_tokens.values()}
+            evictable = next((cid for cid in self.clients if cid not in used), None)
+            if evictable is None:
+                raise RegistrationError(
+                    error="invalid_client_metadata",
+                    error_description="Client registration limit reached.",
+                )
+            self.clients.pop(evictable, None)
         await super().register_client(client_info)
         self._save_state()
 
@@ -282,7 +306,7 @@ class SelfHostedOAuthProvider(InMemoryOAuthProvider):
             )
         client, params, expiry, attempts = entry
 
-        presented = self._kdf(password)
+        presented = await anyio.to_thread.run_sync(self._kdf, password, limiter=self._kdf_limiter)
         if not hmac.compare_digest(presented, self.__pw_digest):
             self._record_failure(ip)
             attempts += 1

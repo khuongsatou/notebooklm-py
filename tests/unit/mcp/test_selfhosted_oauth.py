@@ -15,7 +15,7 @@ import pytest
 pytest.importorskip("fastmcp")
 
 from fastmcp.server.auth import MultiAuth  # noqa: E402
-from mcp.server.auth.provider import AuthorizationParams, RegistrationError  # noqa: E402
+from mcp.server.auth.provider import AuthorizationParams  # noqa: E402
 from mcp.shared.auth import OAuthClientInformationFull  # noqa: E402
 from starlette.applications import Starlette  # noqa: E402
 from starlette.testclient import TestClient  # noqa: E402
@@ -120,14 +120,17 @@ def test_metadata_advertises_registration_endpoint() -> None:
 
 # --------------------------------------------------------------------------- DCR cap
 @pytest.mark.asyncio
-async def test_register_client_cap_blocks_new_allows_update() -> None:
+async def test_register_client_cap_evicts_token_less_client() -> None:
+    """At the DCR cap, a new registration evicts a TOKEN-LESS (never-used) client rather
+    than rejecting — so an open-DCR flood can't permanently block the owner's onboarding."""
     p = _provider()
     for i in range(MAX_CLIENTS):
         await p.register_client(_client(f"c{i}"))
-    with pytest.raises(RegistrationError):
-        await p.register_client(_client("overflow"))
+    await p.register_client(_client("newcomer"))  # evicts a token-less client, no raise
+    assert len(p.clients) == MAX_CLIENTS  # still bounded
+    assert "newcomer" in p.clients
     # updating an EXISTING client is still allowed at the cap (RFC 7591)
-    await p.register_client(_client("c0"))
+    await p.register_client(_client("newcomer"))
 
 
 # --------------------------------------------------------------------------- authorize / pending bound

@@ -99,10 +99,14 @@ unaffected); when set, the bearer and OAuth work side by side on the same `/mcp`
 
 > **What it does NOT need vs an IdP:** no dashboard, no JWT template, no audience/email
 > config — the password is the whole identity. Registered clients + tokens **persist**
-> across restarts (under the mounted profile), so a redeploy doesn't force re-login.
+> across restarts in `oauth_state.json` under the mounted profile, so a redeploy doesn't
+> force re-login. **Treat `oauth_state.json` as a full-account secret** (it holds
+> long-lived OAuth tokens — same tier as `master_token.json`).
 > **Honest trade:** because the login page is served through your tunnel, **Cloudflare's
-> edge sees the password in transit** (it terminates TLS) — rotate it freely and use a
-> throwaway Google account. (To remove Cloudflare from the path, self-host TLS instead.)
+> edge sees the password in transit** (it terminates TLS) — use a throwaway Google
+> account. Note: rotating the password does **not** revoke already-issued OAuth tokens
+> (they're long-lived + persisted); **real revocation = delete `oauth_state.json` and
+> restart**. (To remove Cloudflare from the path, self-host TLS instead.)
 
 ## Notes & security
 - **Two auth layers.** The `NOTEBOOKLM_MCP_TOKEN` bearer gates *who can use the
