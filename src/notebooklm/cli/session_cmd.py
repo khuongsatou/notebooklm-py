@@ -329,6 +329,13 @@ def register_session_commands(cli):
         default=None,
         help="Attach oauth_token capture to a running Chrome via CDP (e.g. http://localhost:9222).",
     )
+    @click.option(
+        "--force",
+        "force",
+        is_flag=True,
+        default=False,
+        help="With --master-token: overwrite even if the profile belongs to a different account.",
+    )
     @click.pass_context
     def login(
         ctx,
@@ -346,6 +353,7 @@ def register_session_commands(cli):
         oauth_token,
         android_id,
         cdp_url,
+        force,
     ):
         """Log in to NotebookLM via browser.
 
@@ -386,6 +394,7 @@ def register_session_commands(cli):
                     android_id=android_id,
                     cdp_url=cdp_url,
                     refresh=master_token_refresh,
+                    force=force,
                 )
                 return
 

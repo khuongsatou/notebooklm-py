@@ -13,6 +13,7 @@ from pathlib import Path
 from ....auth import (  # noqa: TID252 (package-relative; public boundary, not _auth.*)
     MasterTokenError,
     exchange_master_token,
+    get_account_email_for_storage,
     mint_cookies,
     persist_minted_jar,
     read_master_token,
@@ -30,6 +31,27 @@ async def _verify(storage_path: Path) -> int:
         return len(await client.notebooks.list())
 
 
+def assert_account_writable(
+    *, email: str, storage_path: Path, master_token_path: Path, force: bool = False
+) -> None:
+    """Refuse to overwrite a profile that already belongs to a *different* Google
+    account, unless ``force``. ``--account`` selects the account to mint; the
+    profile selects where it lands — minting account B into account A's profile
+    silently clobbers A's cookies (and master token). Called early (before the
+    browser oauth_token capture) so a wrong profile fails fast."""
+    if force:
+        return
+    existing = get_account_email_for_storage(storage_path)
+    if existing and existing.casefold() != email.casefold():
+        also_token = " and its master token" if master_token_path.exists() else ""
+        raise MasterTokenError(
+            f"This profile already holds a session for {existing}, but --account is "
+            f"{email}. Minting here would overwrite {existing}'s cookies{also_token}. "
+            "Use a dedicated profile (e.g. `notebooklm -p <name> login --master-token "
+            f"--account {email}`), or pass --force to overwrite this one."
+        )
+
+
 async def bootstrap(
     *,
     email: str,
@@ -38,11 +60,23 @@ async def bootstrap(
     storage_path: Path,
     master_token_path: Path,
     verify: bool = True,
+    force: bool = False,
 ) -> int:
     """One-time: exchange the single-use ``oauth_token`` for a durable master
     token, persist it (0600), mint cookies, write ``storage_state.json``, and
     (optionally) verify by listing notebooks. Returns the notebook count (or -1
-    when verify is False). Raises :class:`MasterTokenError` on rejection."""
+    when verify is False). Raises :class:`MasterTokenError` on rejection.
+
+    Refuses to overwrite a profile that already belongs to a *different* account
+    (``--account`` mismatch) unless ``force`` — minting writes a full session +
+    durable token into the profile, so a wrong profile silently clobbers it."""
+    await asyncio.to_thread(
+        assert_account_writable,
+        email=email,
+        storage_path=storage_path,
+        master_token_path=master_token_path,
+        force=force,
+    )
     # exchange/write/persist are sync (network + locked file I/O) — off-thread so
     # they don't block the event loop the CLI runs them on.
     token = await asyncio.to_thread(exchange_master_token, email, oauth_token, android_id)
@@ -103,7 +137,18 @@ def capture_oauth_token(
             # are system Chromium channels (the documented macOS-15-crash workaround).
             # channel=None selects the bundled Chromium.
             channel = browser if browser and browser != "chromium" else None
-            browser_obj = p.chromium.launch(headless=False, channel=channel)
+            # Google refuses sign-in in browsers that advertise automation ("This
+            # browser or app may not be secure"). Drop the --enable-automation
+            # banner and the AutomationControlled blink feature so
+            # navigator.webdriver is false. This is the minimal de-automation, not
+            # a stealth library (rejected — see auth-cookie-lifecycle.md §7); if
+            # Google still blocks, use --cdp-url (your own Chrome) or --oauth-token.
+            browser_obj = p.chromium.launch(
+                headless=False,
+                channel=channel,
+                args=["--disable-blink-features=AutomationControlled"],
+                ignore_default_args=["--enable-automation"],
+            )
             owns_browser = True
             context = browser_obj.new_context()
             owns_context = True
@@ -129,7 +174,11 @@ def capture_oauth_token(
                 browser_obj.close()
     if not token:
         raise MasterTokenError(
-            "Did not observe an oauth_token cookie. Complete Google sign-in at "
-            "accounts.google.com/EmbeddedSetup, then retry (or pass --oauth-token)."
+            "Did not observe an oauth_token cookie. If Google showed 'This browser "
+            "or app may not be secure', it blocked the automated browser — attach "
+            "to your own Chrome with --cdp-url (launch it with "
+            "--remote-debugging-port=9222), or sign in manually and pass the "
+            "oauth_token cookie via --oauth-token. Otherwise complete sign-in at "
+            "accounts.google.com/EmbeddedSetup, then retry."
         )
     return token

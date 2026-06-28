@@ -7492,6 +7492,24 @@
           "type": {
             "name": "text"
           }
+        },
+        {
+          "default": false,
+          "envvar": null,
+          "has_custom_shell_complete": false,
+          "help": "With --master-token: overwrite even if the profile belongs to a different account.",
+          "is_flag": true,
+          "kind": "option",
+          "multiple": false,
+          "name": "force",
+          "opts": [
+            "--force"
+          ],
+          "required": false,
+          "secondary_opts": [],
+          "type": {
+            "name": "boolean"
+          }
         }
       ],
       "short_help": "Log in to NotebookLM via browser."

@@ -28,6 +28,7 @@ def run_master_token_login(
     android_id,
     cdp_url,
     refresh,
+    force=False,
 ):
     """Bootstrap or refresh headless master-token auth (see ``login --master-token``)."""
     profile = ctx.obj.get("profile") if ctx.obj else None
@@ -44,6 +45,14 @@ def run_master_token_login(
         if not account_email:
             console.print("[red]--master-token requires --account EMAIL[/red]")
             exit_with_code(1)
+        # Guard before the (interactive) oauth_token capture so a wrong profile
+        # fails fast instead of after a full sign-in.
+        mt_service.assert_account_writable(
+            email=account_email,
+            storage_path=storage_path,
+            master_token_path=master_token_path,
+            force=force,
+        )
         rec = read_master_token(master_token_path)
         aid = android_id or (rec["android_id"] if rec else generate_android_id())
         token = oauth_token or mt_service.capture_oauth_token(browser=browser, cdp_url=cdp_url)
@@ -54,6 +63,7 @@ def run_master_token_login(
                 android_id=aid,
                 storage_path=storage_path,
                 master_token_path=master_token_path,
+                force=force,
             )
         )
         console.print(
