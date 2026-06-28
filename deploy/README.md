@@ -80,33 +80,86 @@ Claude **Desktop** also accepts the bearer. Claude **.ai** (web/mobile) does
 not — its connector UI is OAuth-only — so use step 6 for it.
 
 ## 6. (Optional) Connect from claude.ai — OAuth via WorkOS AuthKit
-claude.ai's custom-connector UI has no bearer field; it speaks OAuth. WorkOS
-AuthKit (free tier) provides that OAuth layer. **This is opt-in and additive** —
-leave it unconfigured to stay bearer-only (Claude Code/Desktop keep working).
+claude.ai's custom-connector UI has no bearer-token field; it only speaks OAuth.
+WorkOS **AuthKit** (free tier) is the OAuth authorization server that gives claude.ai
+something to log in against, while our server stays a *resource server* that just
+validates the resulting token. **This is opt-in and additive** — leave all four env
+vars unset to stay bearer-only (Claude Code / Desktop keep working unchanged).
 
-1. **WorkOS dashboard** (workos.com, free): create an **AuthKit** project.
-   - **Enable Dynamic Client Registration** (Applications → Configuration) — claude.ai needs it.
-   - Add a **JWT template** that injects `email` **and** `email_verified` into the
-     **access token** (not just the ID token) — the allowlist reads them from the
-     access-token JWT. *(If your decoded access token lacks `email`, the connector
-     correctly rejects every login; this template is the fix.)*
-   - Register `https://<your-host>` as an allowed redirect.
-   - Copy the **AuthKit domain** and **Client ID**.
-2. **`.env`** — set all four (see `.env.example`); leave them blank to stay bearer-only:
-   ```
-   NOTEBOOKLM_MCP_AUTHKIT_DOMAIN=https://your-project.authkit.app
-   NOTEBOOKLM_MCP_AUTHKIT_CLIENT_ID=client_xxxxxxxx
-   NOTEBOOKLM_MCP_AUTHKIT_BASE_URL=https://<your-host>
-   NOTEBOOKLM_MCP_ALLOWED_EMAILS=you@example.com
-   ```
-   `make dev` again. (Partial config refuses to start — all four are required together.)
-3. **claude.ai → Settings → Connectors → Add custom connector** → `https://<your-host>/mcp`.
-   The browser OAuth flow runs via WorkOS; only emails in the allowlist are admitted.
-   Claude Code keeps using the bearer (both work at once).
+> Dashboard paths below are current as of mid-2026; WorkOS occasionally relabels
+> menus. The four things you must end up with: **DCR enabled**, **email in the
+> access token**, your **AuthKit domain**, and your **project Client ID**.
+
+### 6a. Create the AuthKit project
+1. Sign up at **dashboard.workos.com** and create an **Environment** (use the
+   *Staging* / test environment first). AuthKit is on by default for new projects;
+   if not, enable it under **Authentication**.
+2. Under **Authentication → Sign-in methods**, enable at least one method you'll log
+   in with (e.g. **Email + Password** or **Google OAuth**). This is how *you* prove
+   identity during the claude.ai login.
+
+### 6b. Enable Dynamic Client Registration (so claude.ai can self-register)
+claude.ai has no pre-shared client credentials with your server — it registers
+itself at connect time. Enable that:
+- **Dashboard → Applications → Connect → Configuration → enable “Dynamic Client
+  Registration” (DCR).**
+  *(WorkOS's newer “Client ID Metadata Document (CIMD)” also works for clients that
+  support it; enabling DCR covers claude.ai today. Enable both if offered.)*
+
+### 6c. Put `email` + `email_verified` in the ACCESS token (the load-bearing step)
+Our allowlist reads the `email` claim off the **access token** (the JWT claude.ai
+presents to our server) — and WorkOS does **not** put `email` there by default. Add
+a JWT Template:
+- **Dashboard → Authentication → Features → JWT Template**, and add:
+  ```json
+  {
+    "email": {{ user.email }},
+    "email_verified": {{ user.email_verified }}
+  }
+  ```
+  (Reserved claims `iss`/`sub`/`exp`/`iat`/`nbf`/`jti` can't be overridden.) Without
+  this, the connector correctly **rejects every login** — see the verify step (6f).
+
+### 6d. Do NOT configure Resource Indicators (audience must equal your Client ID)
+Our server (via FastMCP `AuthKitProvider`) validates the token's `aud` claim against
+your **project Client ID**. WorkOS's optional *Resource Indicators* feature would
+instead set `aud` to your MCP URL — which our server would then reject. So **leave
+Resource Indicators unset** (the default), so `aud` stays the project default that
+equals your Client ID. (If a future setup needs resource-bound audiences, that's a
+small code change — open an issue.)
+
+### 6e. Collect the values and start the server
+- **AuthKit domain:** **Authentication → AuthKit** (e.g. `https://your-project.authkit.app`).
+- **Client ID:** **Dashboard → API Keys** → the `client_01…` value (project-level —
+  NOT a per-client DCR id, NOT the secret API key).
+- Put them in `deploy/.env` (see `.env.example`); leave blank to stay bearer-only:
+  ```
+  NOTEBOOKLM_MCP_AUTHKIT_DOMAIN=https://your-project.authkit.app
+  NOTEBOOKLM_MCP_AUTHKIT_CLIENT_ID=client_01XXXXXXXXXXXXXXXXXXXXXXXX
+  NOTEBOOKLM_MCP_AUTHKIT_BASE_URL=https://<your-host>      # your public tunnel URL
+  NOTEBOOKLM_MCP_ALLOWED_EMAILS=you@example.com            # who OAuth admits
+  ```
+  Then `make dev` (or `make prod VERSION=…`). All four are required together —
+  partial config refuses to start.
+
+### 6f. Verify the token BEFORE adding the connector (saves debugging)
+The two failure modes (missing `email`, wrong `aud`) are invisible until a token is
+issued. Confirm with WorkOS's **Authentication → Users → (a user) → “Get access
+token”** (or any AuthKit login), copy the JWT, and paste it into **jwt.io**:
+- `aud` **equals your `NOTEBOOKLM_MCP_AUTHKIT_CLIENT_ID`** → audience OK.
+- `email` is present and `email_verified` is `true` → allowlist will admit it.
+If `aud` is a URL or some other value instead of the client id, you have Resource
+Indicators configured (undo 6d) or a WorkOS/FastMCP version skew — stop and open an
+issue rather than guessing.
+
+### 6g. Add the connector on claude.ai
+- **claude.ai → Settings → Connectors → Add custom connector** → URL
+  `https://<your-host>/mcp`. The browser OAuth flow runs via WorkOS; only emails in
+  your allowlist are admitted. Claude Code keeps using the bearer — both work at once.
 
 > The `email` allowlist is the real backstop — without it, *any* WorkOS-authenticated
-> user could reach your account, so it is **mandatory** whenever OAuth is enabled.
-> (You may see an `authlib.jose` deprecation line from FastMCP on startup — harmless.)
+> user could reach your account — so it is **mandatory** whenever OAuth is enabled.
+> (A harmless `authlib.jose` deprecation line from FastMCP may print on startup.)
 
 > **The default compose still requires `NOTEBOOKLM_MCP_TOKEN`** — OAuth is layered on
 > top of the bearer (so Claude Code/Desktop keep working). For an **OAuth-only** deploy
