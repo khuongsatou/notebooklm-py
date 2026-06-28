@@ -124,7 +124,12 @@ Full step-by-step (incl. the security model and the read-write profile requireme
 mounted `master_token.json` is a durable full-account credential. The connector moves
 text/references only; add device files via Google Drive (`source_add` with a Drive id) or the
 NotebookLM app, and consume generated podcasts/videos in the NotebookLM app (same account).
-`OAuth` connectors and multi-tenant hosting are out of scope for this single-tenant setup.
+
+The static bearer above works for Claude Code and Desktop. **claude.ai (web/mobile)** has an
+OAuth-only connector UI, so it uses the optional **self-hosted OAuth** layer — opt-in and
+additive (unset → bearer-only; when set, the bearer and OAuth coexist on one `/mcp`), gated by
+a single password with no external IdP. Setup is step 6 of [`deploy/README.md`](../deploy/README.md).
+Multi-tenant hosting remains out of scope for this single-tenant setup.
 
 ## Core concepts
 

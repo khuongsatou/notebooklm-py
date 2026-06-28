@@ -76,9 +76,33 @@ claude mcp add --transport http notebooklm \
   https://notebooklm-mcp.yourdomain.com/mcp \
   --header "Authorization: Bearer $NOTEBOOKLM_MCP_TOKEN"
 ```
-(For Claude.ai / Desktop custom connectors, add the same URL under
-**Settings → Connectors**. The static bearer works for Claude Code today; a
-polished one-click OAuth flow is a future enhancement.)
+Claude **Desktop** also accepts the bearer. Claude **.ai** (web/mobile) does not —
+its connector UI is OAuth-only — so use step 6 for it.
+
+## 6. (Optional) Connect from claude.ai — self-hosted OAuth (one password)
+claude.ai's connector UI has no bearer field; it speaks OAuth. Instead of an external
+IdP, the server runs its own tiny OAuth authorization server gated by **one password**.
+**Opt-in and additive** — leave both vars unset to stay bearer-only (Claude Code/Desktop
+unaffected); when set, the bearer and OAuth work side by side on the same `/mcp`.
+
+1. **`.env`** — set a strong password + your public URL (see `.env.example`):
+   ```
+   # a long random secret — the gate (>=16 chars):
+   NOTEBOOKLM_MCP_OAUTH_PASSWORD=$(python -c "import secrets;print(secrets.token_urlsafe(24))")
+   NOTEBOOKLM_MCP_OAUTH_BASE_URL=https://<your-tunnel-host>
+   ```
+   `make dev` (or `make prod VERSION=…`). Both required together — partial/weak/non-https
+   config refuses to start.
+2. **claude.ai → Settings → Connectors → Add custom connector** → `https://<your-host>/mcp`.
+   claude.ai registers itself (DCR), then opens the server's **password page** in your
+   browser; enter the password → you're connected. Claude Code keeps using the bearer.
+
+> **What it does NOT need vs an IdP:** no dashboard, no JWT template, no audience/email
+> config — the password is the whole identity. Registered clients + tokens **persist**
+> across restarts (under the mounted profile), so a redeploy doesn't force re-login.
+> **Honest trade:** because the login page is served through your tunnel, **Cloudflare's
+> edge sees the password in transit** (it terminates TLS) — rotate it freely and use a
+> throwaway Google account. (To remove Cloudflare from the path, self-host TLS instead.)
 
 ## Notes & security
 - **Two auth layers.** The `NOTEBOOKLM_MCP_TOKEN` bearer gates *who can use the
@@ -86,8 +110,9 @@ polished one-click OAuth flow is a future enhancement.)
   token **never** traverses the tunnel — only MCP tool calls/results do. The
   bearer **does** terminate at Cloudflare (Cloudflare can see it in transit, like
   any reverse-proxied request), so rotate it freely.
-- **Fail-closed.** The server refuses to start on a non-loopback bind without
-  `NOTEBOOKLM_MCP_TOKEN` set.
+- **Fail-closed.** The server refuses to start on a non-loopback bind with no auth
+  at all (neither `NOTEBOOKLM_MCP_TOKEN` nor self-hosted OAuth), and refuses
+  partial/weak/non-https OAuth config.
 - **One container per account.** Do not scale replicas off one master token —
   concurrent re-mints invalidate each other's session.
 - **Rotate the bearer**: change `NOTEBOOKLM_MCP_TOKEN` in `.env`,

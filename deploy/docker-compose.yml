@@ -28,6 +28,11 @@ services:
       NOTEBOOKLM_MCP_TOKEN: ${NOTEBOOKLM_MCP_TOKEN:?set NOTEBOOKLM_MCP_TOKEN in .env}
       # Binds 0.0.0.0 (for the cloudflared sidecar) → makes the token MANDATORY.
       NOTEBOOKLM_MCP_ALLOW_EXTERNAL_BIND: "1"
+      # Optional self-hosted OAuth (for claude.ai). Unset → bearer-only; set both
+      # together (partial → refuses to start). See .env.example. The OAuth state
+      # (registered clients + tokens) persists under the mounted profile volume.
+      NOTEBOOKLM_MCP_OAUTH_PASSWORD: ${NOTEBOOKLM_MCP_OAUTH_PASSWORD:-}
+      NOTEBOOKLM_MCP_OAUTH_BASE_URL: ${NOTEBOOKLM_MCP_OAUTH_BASE_URL:-}
       # Point the app at the mounted profile, independent of the (arbitrary) uid's
       # home. The host dir is always mounted as the profile literally named
       # "server"; NOTEBOOKLM_HOME/profiles/server is where the app reads+writes.
