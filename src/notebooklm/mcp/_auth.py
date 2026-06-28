@@ -198,6 +198,19 @@ def get_authkit_config() -> AuthKitConfig | None:
     )
 
 
+def _claim_is_true(value: object) -> bool:
+    """True only for a JSON boolean ``true`` or the string ``"true"`` (case-insensitive).
+
+    WorkOS JWT templates can render ``{{ user.email_verified }}`` as either a real
+    boolean or the string ``"true"`` depending on dashboard config, so accept both.
+    The claim is **signed** by WorkOS (the client cannot forge its type), so this is
+    still fail-closed for genuinely-unverified identities — it widens the accepted
+    *type*, not the *gate*. Everything else (``False``, ``"false"``, ``1``, ``None``,
+    missing) is rejected.
+    """
+    return value is True or (isinstance(value, str) and value.strip().casefold() == "true")
+
+
 class _EmailAllowlistVerifier(TokenVerifier):
     """Wrap an OAuth token verifier and admit only allowlisted, verified emails.
 
@@ -229,7 +242,7 @@ class _EmailAllowlistVerifier(TokenVerifier):
                 "the remote-deployment docs)."
             )
             return None
-        if claims.get("email_verified") is not True:
+        if not _claim_is_true(claims.get("email_verified")):
             logger.warning("OAuth token email is not verified; rejecting.")
             return None
         if email.strip().casefold() not in self._allowed:
@@ -259,6 +272,9 @@ def build_authkit_provider(config: AuthKitConfig) -> AuthProvider:
         base_url=config.base_url,
         client_id=config.client_id,
         required_scopes=["openid"],  # NOT "email": that gates the scope STRING, not the claim
+        # Advertise email in the protected-resource metadata so the client requests
+        # it — maximizes the chance the access-token JWT carries the email claim.
+        scopes_supported=["openid", "profile", "email"],
     )
     provider.token_verifier = _EmailAllowlistVerifier(
         provider.token_verifier, config.allowed_emails

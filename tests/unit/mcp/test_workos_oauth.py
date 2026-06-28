@@ -99,10 +99,15 @@ def _allow() -> frozenset[str]:
 
 
 @pytest.mark.asyncio
-async def test_allowlist_accepts_verified_listed_email(_allow: frozenset[str]) -> None:
-    inner = _StubVerifier({"email": "You@Example.com", "email_verified": True})
+@pytest.mark.parametrize("verified", [True, "true", "True", " TRUE "])
+async def test_allowlist_accepts_verified_listed_email(
+    _allow: frozenset[str], verified: object
+) -> None:
+    # email_verified may be a JSON boolean OR a string (WorkOS JWT templates render
+    # variables as strings); both forms are accepted. Email match is case-insensitive.
+    inner = _StubVerifier({"email": "You@Example.com", "email_verified": verified})
     v = _EmailAllowlistVerifier(inner, _allow)
-    assert await v.verify_token("tok") is not None  # case-insensitive match
+    assert await v.verify_token("tok") is not None
 
 
 @pytest.mark.asyncio
@@ -110,7 +115,10 @@ async def test_allowlist_accepts_verified_listed_email(_allow: frozenset[str]) -
     "claims",
     [
         {"email": "nope@x.com", "email_verified": True},  # not on allowlist
-        {"email": "you@example.com", "email_verified": False},  # unverified
+        {"email": "you@example.com", "email_verified": False},  # unverified (bool)
+        {"email": "you@example.com", "email_verified": "false"},  # unverified (string)
+        {"email": "you@example.com", "email_verified": 1},  # truthy non-bool → reject
+        {"email": "you@example.com"},  # missing email_verified
         {"email_verified": True},  # missing email claim (JWT template not set)
         {"email": "   ", "email_verified": True},  # blank email
     ],
@@ -150,6 +158,23 @@ def test_build_authkit_wraps_token_verifier_in_allowlist() -> None:
     # The default JWTVerifier was replaced by our allowlist wrapper (the wrap takes
     # effect because RemoteAuthProvider delegates to self.token_verifier at runtime).
     assert isinstance(provider.token_verifier, _EmailAllowlistVerifier)
+
+
+@pytest.mark.asyncio
+async def test_provider_verify_routes_through_allowlist_at_runtime() -> None:
+    """Option-B guard: ``provider.verify_token`` must actually delegate to the
+    allowlist wrapper at call time (not a verifier captured at construction). If a
+    future fastmcp cached the original verifier, the allowlist would be silently
+    bypassed while ``test_build_authkit_wraps_...`` still passed — this catches that.
+    Drive the provider end-to-end with a stubbed inner and confirm the gate fires.
+    """
+    provider = build_authkit_provider(_cfg())
+    wrapper = provider.token_verifier
+    assert isinstance(wrapper, _EmailAllowlistVerifier)
+    wrapper._inner = _StubVerifier({"email": "evil@x.com", "email_verified": True})
+    assert await provider.verify_token("x") is None  # not allowlisted → rejected via wrapper
+    wrapper._inner = _StubVerifier({"email": "you@example.com", "email_verified": True})
+    assert await provider.verify_token("x") is not None  # allowlisted → admitted
 
 
 def test_build_authkit_serves_oauth_discovery_routes() -> None:
