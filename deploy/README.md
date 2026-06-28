@@ -89,13 +89,30 @@ unaffected); when set, the bearer and OAuth work side by side on the same `/mcp`
    ```
    # a long random secret — the gate (>=16 chars):
    NOTEBOOKLM_MCP_OAUTH_PASSWORD=$(python -c "import secrets;print(secrets.token_urlsafe(24))")
-   NOTEBOOKLM_MCP_OAUTH_BASE_URL=https://<your-tunnel-host>
+   # the BARE public https origin — NOT the /mcp connector URL (the OAuth endpoints
+   # /authorize, /token, /register, /login, /.well-known/* mount at the ROOT):
+   NOTEBOOKLM_MCP_OAUTH_BASE_URL=https://notebooklm.example.com
    ```
-   `make dev` (or `make prod VERSION=…`). Both required together — partial/weak/non-https
-   config refuses to start.
-2. **claude.ai → Settings → Connectors → Add custom connector** → `https://<your-host>/mcp`.
-   claude.ai registers itself (DCR), then opens the server's **password page** in your
-   browser; enter the password → you're connected. Claude Code keeps using the bearer.
+   `make dev` (or `make prod VERSION=…`). Both required together — partial/weak/
+   non-https/has-a-path config refuses to start.
+2. **Cloudflare tunnel** — the Public Hostname must route the WHOLE host (path `/`,
+   not a `/mcp`-scoped ingress) to `http://notebooklm-mcp:9420`, so the root OAuth
+   routes are reachable. (The `notebooklm.` subdomain is created automatically when you
+   add the Public Hostname; the zone just has to be in your Cloudflare account.)
+3. **Verify** (after `make dev` + the tunnel is up):
+   ```
+   curl https://notebooklm.example.com/.well-known/oauth-authorization-server
+   ```
+   `issuer` should be your bare origin and `authorization_endpoint` should be
+   `…/authorize` (at the root). If they show `…/mcp/authorize`, your BASE_URL has the
+   `/mcp` path — drop it.
+4. **claude.ai → Settings → Connectors → Add custom connector** → the URL **WITH** `/mcp`:
+   `https://notebooklm.example.com/mcp`. claude.ai registers itself (DCR), then opens the
+   server's **password page** in your browser; enter the password → you're connected.
+   Claude Code keeps using the bearer.
+
+   > **base URL vs connector URL:** `NOTEBOOKLM_MCP_OAUTH_BASE_URL` is the bare origin
+   > (`https://host`); the claude.ai connector URL is that **+ `/mcp`**.
 
 > **What it does NOT need vs an IdP:** no dashboard, no JWT template, no audience/email
 > config — the password is the whole identity. Registered clients + tokens **persist**

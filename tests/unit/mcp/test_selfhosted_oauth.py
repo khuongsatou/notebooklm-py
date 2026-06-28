@@ -78,6 +78,7 @@ def test_config_off(_clear_env: None) -> None:
         (_PW, "https://", "https"),  # https but no host
         (_PW, "https://h?x=1", "https"),  # query not allowed
         (_PW, "https://h#f", "https"),  # fragment not allowed
+        (_PW, "https://h/mcp", "/mcp"),  # the connector URL, not the bare origin
     ],
 )
 def test_config_fail_closed(

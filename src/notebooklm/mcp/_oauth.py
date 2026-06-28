@@ -159,10 +159,20 @@ def get_oauth_config() -> OAuthConfig | None:
             "characters (use a long random value)."
         )
     parsed = urlsplit(base_url)
-    if parsed.scheme.lower() != "https" or not parsed.netloc or parsed.query or parsed.fragment:
+    # Must be a BARE https origin: the OAuth routes (/authorize, /token, /register,
+    # /login, /.well-known/*) mount at the ROOT, so a path like /mcp would make the
+    # discovery metadata advertise endpoints that don't exist. (A trailing "/" is fine.)
+    if (
+        parsed.scheme.lower() != "https"
+        or not parsed.netloc
+        or parsed.path not in ("", "/")
+        or parsed.query
+        or parsed.fragment
+    ):
         raise SystemExit(
-            f"{OAUTH_BASE_URL_ENV} must be a public https origin claude.ai reaches "
-            f"(e.g. https://your-host, no query/fragment); got {base_url!r}."
+            f"{OAUTH_BASE_URL_ENV} must be a bare public https origin claude.ai reaches "
+            f"(e.g. https://your-host) — NOT the /mcp connector URL, and no path/query/"
+            f"fragment; got {base_url!r}."
         )
 
     state_path: Path | None = None
