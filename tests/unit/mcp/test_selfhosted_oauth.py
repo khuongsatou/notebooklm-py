@@ -15,11 +15,7 @@ import pytest
 pytest.importorskip("fastmcp")
 
 from fastmcp.server.auth import MultiAuth  # noqa: E402
-from mcp.server.auth.provider import (  # noqa: E402
-    AuthorizationParams,
-    AuthorizeError,
-    RegistrationError,
-)
+from mcp.server.auth.provider import AuthorizationParams, RegistrationError  # noqa: E402
 from mcp.shared.auth import OAuthClientInformationFull  # noqa: E402
 from starlette.applications import Starlette  # noqa: E402
 from starlette.testclient import TestClient  # noqa: E402
@@ -140,14 +136,17 @@ async def test_authorize_stashes_and_returns_login() -> None:
 
 
 @pytest.mark.asyncio
-async def test_pending_stash_is_bounded() -> None:
+async def test_pending_stash_bounded_by_eviction() -> None:
+    """A flood of pre-password /authorize calls is bounded by evicting the oldest entry —
+    NOT by rejecting new ones (so an attacker can't block the owner's login)."""
     from notebooklm.mcp._oauth import MAX_PENDING
 
     p = _provider()
-    for _ in range(MAX_PENDING):
-        await p.authorize(_client(), _params())
-    with pytest.raises(AuthorizeError):
-        await p.authorize(_client(), _params())
+    last = ""
+    for _ in range(MAX_PENDING + 5):
+        last = (await p.authorize(_client(), _params())).split("sid=")[1]
+    assert len(p._pending) == MAX_PENDING  # bounded, never raised
+    assert last in p._pending  # newest survives (oldest evicted)
 
 
 # --------------------------------------------------------------------------- throttle
@@ -254,3 +253,24 @@ def test_malformed_state_file_does_not_crash(tmp_path, blob: str) -> None:
     (tmp_path / "oauth_state.json").write_text(blob)
     p = _provider(tmp_path)  # must not raise
     assert p.clients == {}
+
+
+def test_login_get_shows_escaped_consent_redirect() -> None:
+    """The GET form shows the (escaped) redirect target for the sid's pending request,
+    so a rogue registered client is visible before the password is entered."""
+    p = _provider()
+    client = OAuthClientInformationFull(client_id="c1", redirect_uris=["https://claude.ai/cb"])
+    asyncio.run(p.register_client(client))
+    sid = asyncio.run(p.authorize(client, _params())).split("sid=")[1]
+    with TestClient(Starlette(routes=p.get_routes())) as c:
+        r = c.get(f"/login?sid={sid}")
+    assert "claude.ai/cb" in r.text  # consent line shows where the code returns
+
+
+def test_fail_times_drops_empty_entries() -> None:
+    """The per-IP throttle dict must not retain empty lists (bounded pre-auth memory)."""
+    p = _provider()
+    # a failure that ages out → the IP key is dropped, not kept as an empty list
+    p._fail_times["1.2.3.4"] = [0.0]  # an ancient failure (epoch), outside the window
+    assert p._throttled("1.2.3.4") is None
+    assert "1.2.3.4" not in p._fail_times

@@ -26,14 +26,13 @@ Hardening: strong-password startup check (primary brute-force defense), per-IP l
 throttle, capped DCR + capped pending-stash (pre-auth DoS), and atomic file persistence
 of clients+tokens (reusing ``_atomic_io``) so a redeploy doesn't force re-auth.
 
-Accepted residuals (reviewed, acceptable for a single-user connector): (a) login-CSRF/
-phishing — an attacker who registers their own client and phishes the owner into
-entering the password on the attacker's ``/login`` link could authorize that client;
-the owner only ever logs in from claude.ai's own flow, so this is phishing-class. (b)
-A flood of pre-auth ``/authorize`` calls (open DCR) can briefly fill the bounded
-pending-stash and make the OWNER's login return ``temporarily_unavailable`` until the
-~300s TTL drains; only the (rare) login flow is affected — an established session keeps
-working. Both are low-severity here and bounded by the strong password + throwaway account.
+Residuals (low-severity, single-user; mitigated): login-CSRF/phishing — an attacker who
+registers their own client and phishes the owner into entering the password on the
+attacker's ``/login`` link could authorize that client. The ``/login`` page shows the
+(escaped) redirect target so a rogue client is noticeable before the password is typed,
+and the owner only logs in from claude.ai's own flow — phishing-class, bounded by the
+strong password + throwaway account. (A pre-auth ``/authorize`` flood can no longer block
+the owner's login: the pending-stash evicts oldest rather than rejecting.)
 """
 
 from __future__ import annotations
@@ -48,6 +47,7 @@ import secrets
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import NamedTuple
 
 from fastmcp.server.auth import AuthProvider
 from fastmcp.server.auth.providers.in_memory import InMemoryOAuthProvider
@@ -56,7 +56,6 @@ from mcp.server.auth.provider import (
     AccessToken,
     AuthorizationCode,
     AuthorizationParams,
-    AuthorizeError,
     RefreshToken,
     RegistrationError,
 )
@@ -95,6 +94,17 @@ MAX_LOGIN_ATTEMPTS = 3
 #: Per-IP login throttle: at most THROTTLE_MAX failed POSTs per THROTTLE_WINDOW seconds.
 THROTTLE_WINDOW_SECONDS = 60
 THROTTLE_MAX_FAILURES = 5
+#: Cap the number of distinct IPs tracked for throttling (bound pre-auth memory).
+MAX_THROTTLE_IPS = 2048
+
+
+class _Pending(NamedTuple):
+    """A pre-password, SDK-validated authorize request awaiting the password page."""
+
+    client: OAuthClientInformationFull
+    params: AuthorizationParams
+    expiry: float
+    attempts: int
 
 
 @dataclass(frozen=True)
@@ -178,10 +188,8 @@ class SelfHostedOAuthProvider(InMemoryOAuthProvider):
         # Store only a non-reversible digest of the gate password (never the cleartext).
         self.__pw_digest = hashlib.sha256(password.encode("utf-8")).digest()
         self._state_path = state_path
-        # sid -> (client, validated params, expiry_ts, attempts). Pre-auth + bounded.
-        self._pending: dict[
-            str, tuple[OAuthClientInformationFull, AuthorizationParams, float, int]
-        ] = {}
+        # sid -> _Pending(client, validated params, expiry_ts, attempts). Pre-auth + bounded.
+        self._pending: dict[str, _Pending] = {}
         # per-IP failed-login timestamps (throttle).
         self._fail_times: dict[str, list[float]] = {}
         self._load_state()
@@ -204,13 +212,15 @@ class SelfHostedOAuthProvider(InMemoryOAuthProvider):
         """Reached ONLY after the SDK handler validated client/redirect_uri/scope/PKCE.
         Stash the validated request and divert the browser to the password page."""
         self._prune_pending()
-        if len(self._pending) >= MAX_PENDING:
-            raise AuthorizeError(
-                error="temporarily_unavailable",
-                error_description="Too many pending logins; try again shortly.",
-            )
+        # Bound the stash by EVICTING the oldest pending login rather than rejecting the
+        # new one — DCR is open, so a flood of pre-password /authorize calls must NOT be
+        # able to block the owner from starting a login (eviction keeps the cap without
+        # the owner-lockout that raising would cause).
+        while len(self._pending) >= MAX_PENDING:
+            oldest = min(self._pending, key=lambda s: self._pending[s].expiry)
+            self._pending.pop(oldest, None)
         sid = secrets.token_urlsafe(32)
-        self._pending[sid] = (client, params, time.time() + PENDING_TTL_SECONDS, 0)
+        self._pending[sid] = _Pending(client, params, time.time() + PENDING_TTL_SECONDS, 0)
         return f"{str(self.base_url).rstrip('/')}/login?sid={sid}"
 
     def get_routes(self, mcp_path: str | None = None) -> list[Route]:
@@ -222,7 +232,13 @@ class SelfHostedOAuthProvider(InMemoryOAuthProvider):
 
     async def _login(self, request: Request) -> Response:
         if request.method == "GET":
-            return self._render_form(request.query_params.get("sid", ""))
+            self._prune_pending()
+            sid = request.query_params.get("sid", "")
+            entry = self._pending.get(sid)
+            # Show WHICH client/redirect the owner is authorizing (consent transparency)
+            # so a rogue registered client is noticeable before the password is typed.
+            redirect = str(entry.params.redirect_uri) if entry else None
+            return self._render_form(sid, redirect_uri=redirect)
 
         ip = _client_ip(request)
         retry_after = self._throttled(ip)
@@ -254,8 +270,10 @@ class SelfHostedOAuthProvider(InMemoryOAuthProvider):
                 return self._render_form(
                     "", error="Too many failed attempts. Restart the connection from claude.ai."
                 )
-            self._pending[sid] = (client, params, expiry, attempts)
-            return self._render_form(sid, error="Incorrect password.")
+            self._pending[sid] = _Pending(client, params, expiry, attempts)
+            return self._render_form(
+                sid, redirect_uri=str(params.redirect_uri), error="Incorrect password."
+            )
 
         # Success: single-use consume, then issue the code via the PARENT (NOT self.authorize
         # → infinite recursion; NOT bare super() → unbound in this handler).
@@ -264,19 +282,28 @@ class SelfHostedOAuthProvider(InMemoryOAuthProvider):
         redirect = await InMemoryOAuthProvider.authorize(self, client, params)
         return RedirectResponse(redirect, status_code=302, headers={"Cache-Control": "no-store"})
 
-    def _render_form(self, sid: str, *, error: str = "") -> HTMLResponse:
+    def _render_form(
+        self, sid: str, *, redirect_uri: str | None = None, error: str = ""
+    ) -> HTMLResponse:
         # `sid` on a GET comes from the URL query (attacker-controllable), so it MUST be
         # HTML-escaped before it's reflected into the value="" attribute — otherwise
-        # /login?sid="><script>... is a reflected XSS. `error` is our own literal, escaped
-        # for good measure. create_secure_html_response adds X-Frame-Options: DENY; we add
-        # a strict CSP (no scripts; inline styles only; form posts same-origin) as
-        # defense-in-depth so even a reflection slip can't execute script.
+        # /login?sid="><script>... is a reflected XSS. `redirect_uri` (consent display)
+        # and `error` are likewise escaped. create_secure_html_response adds X-Frame-
+        # Options: DENY; we add a strict CSP (no scripts; inline styles only; form posts
+        # same-origin) as defense-in-depth so even a reflection slip can't execute script.
         safe_sid = html.escape(sid, quote=True)
         err = f'<p style="color:#c00">{html.escape(error)}</p>' if error else ""
+        # Consent line: show where the code will be returned so a rogue registered client
+        # is noticeable before the password is entered.
+        consent = (
+            f"<p>Authorizing a client that returns to <b>{html.escape(redirect_uri)}</b>.</p>"
+            if redirect_uri
+            else ""
+        )
         body = (
             "<h2>NotebookLM connector</h2>"
             "<p>Enter the connector password to authorize this client.</p>"
-            f"{err}"
+            f"{consent}{err}"
             '<form method="post" action="login">'
             f'<input type="hidden" name="sid" value="{safe_sid}">'
             '<input type="password" name="password" autofocus required '
@@ -295,7 +322,10 @@ class SelfHostedOAuthProvider(InMemoryOAuthProvider):
     def _throttled(self, ip: str) -> int | None:
         now = time.time()
         times = [t for t in self._fail_times.get(ip, []) if now - t < THROTTLE_WINDOW_SECONDS]
-        self._fail_times[ip] = times
+        if times:
+            self._fail_times[ip] = times
+        else:
+            self._fail_times.pop(ip, None)  # never retain an empty list (bound memory)
         if len(times) >= THROTTLE_MAX_FAILURES:
             # retry once the oldest failure ages out of the window (times are appended
             # chronologically, so min == oldest); min() also sidesteps the ADR-0011
@@ -304,6 +334,11 @@ class SelfHostedOAuthProvider(InMemoryOAuthProvider):
         return None
 
     def _record_failure(self, ip: str) -> None:
+        # The public /login POST is pre-auth, so _fail_times is attacker-reachable: cap the
+        # number of tracked IPs (evict an arbitrary existing entry when a NEW IP arrives at
+        # the cap) so it can't grow unbounded.
+        if ip not in self._fail_times and len(self._fail_times) >= MAX_THROTTLE_IPS:
+            self._fail_times.pop(next(iter(self._fail_times)), None)
         self._fail_times.setdefault(ip, []).append(time.time())
 
     def _prune_pending(self) -> None:
@@ -346,6 +381,7 @@ class SelfHostedOAuthProvider(InMemoryOAuthProvider):
             "r2a": dict(self._refresh_to_access_map),
         }
         try:
+            self._state_path.parent.mkdir(parents=True, exist_ok=True)
             atomic_write_json(self._state_path, data)  # POSIX-atomic, 0600, filelock
         except OSError as exc:  # disk error must not crash an active server
             logger.warning("Could not persist OAuth state to %s: %s", self._state_path, exc)
