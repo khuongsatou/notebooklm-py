@@ -48,6 +48,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import NamedTuple
+from urllib.parse import urlsplit
 
 from fastmcp.server.auth import AuthProvider
 from fastmcp.server.auth.providers.in_memory import InMemoryOAuthProvider
@@ -146,10 +147,11 @@ def get_oauth_config() -> OAuthConfig | None:
             f"the primary brute-force defense, so it must be at least {MIN_PASSWORD_LEN} "
             "characters (use a long random value)."
         )
-    if not base_url.lower().startswith("https://"):
+    parsed = urlsplit(base_url)
+    if parsed.scheme.lower() != "https" or not parsed.netloc or parsed.query or parsed.fragment:
         raise SystemExit(
-            f"{OAUTH_BASE_URL_ENV} must be the public https URL claude.ai reaches "
-            f"(e.g. https://your-host); got {base_url!r}."
+            f"{OAUTH_BASE_URL_ENV} must be a public https origin claude.ai reaches "
+            f"(e.g. https://your-host, no query/fragment); got {base_url!r}."
         )
 
     state_path: Path | None = None
@@ -185,14 +187,33 @@ class SelfHostedOAuthProvider(InMemoryOAuthProvider):
             # claude.ai cannot register itself, so the whole OAuth path is dead.
             client_registration_options=ClientRegistrationOptions(enabled=True),
         )
-        # Store only a non-reversible digest of the gate password (never the cleartext).
-        self.__pw_digest = hashlib.sha256(password.encode("utf-8")).digest()
+        # Store only a non-reversible KDF digest of the gate password (never the
+        # cleartext). scrypt (a deliberately slow, memory-hard KDF) rather than a bare
+        # SHA-256 so the password — even though it's high-entropy and never persisted —
+        # gets a computationally-expensive hash, the textbook treatment. A per-process
+        # random salt is held in memory and used for BOTH the configured digest and each
+        # presented-password digest, so equal passwords still produce equal digests for
+        # the constant-time compare.
+        self.__salt = secrets.token_bytes(16)
+        self.__pw_digest = self._kdf(password)
         self._state_path = state_path
         # sid -> _Pending(client, validated params, expiry_ts, attempts). Pre-auth + bounded.
         self._pending: dict[str, _Pending] = {}
         # per-IP failed-login timestamps (throttle).
         self._fail_times: dict[str, list[float]] = {}
         self._load_state()
+
+    def _kdf(self, password: str) -> bytes:
+        """scrypt KDF of the password with the per-process salt (slow + memory-hard)."""
+        return hashlib.scrypt(
+            password.encode("utf-8"),
+            salt=self.__salt,
+            n=2**14,
+            r=8,
+            p=1,
+            dklen=32,
+            maxmem=64 * 1024 * 1024,
+        )
 
     # -- DCR cap ---------------------------------------------------------------
     async def register_client(self, client_info: OAuthClientInformationFull) -> None:
@@ -261,7 +282,7 @@ class SelfHostedOAuthProvider(InMemoryOAuthProvider):
             )
         client, params, expiry, attempts = entry
 
-        presented = hashlib.sha256(password.encode("utf-8")).digest()
+        presented = self._kdf(password)
         if not hmac.compare_digest(presented, self.__pw_digest):
             self._record_failure(ip)
             attempts += 1
@@ -393,18 +414,20 @@ class SelfHostedOAuthProvider(InMemoryOAuthProvider):
             data = json.loads(self._state_path.read_text(encoding="utf-8"))
             if not isinstance(data, dict):
                 raise ValueError("oauth_state.json top level is not an object")
-            self.clients = {
+            # Build into locals FIRST so a failure partway through doesn't leave a
+            # half-applied state (e.g. clients loaded but tokens empty) — assign all or nothing.
+            clients = {
                 k: OAuthClientInformationFull.model_validate(v)
                 for k, v in data.get("clients", {}).items()
             }
-            self.access_tokens = {
+            access_tokens = {
                 k: AccessToken.model_validate(v) for k, v in data.get("access_tokens", {}).items()
             }
-            self.refresh_tokens = {
+            refresh_tokens = {
                 k: RefreshToken.model_validate(v) for k, v in data.get("refresh_tokens", {}).items()
             }
-            self._access_to_refresh_map = dict(data.get("a2r", {}))
-            self._refresh_to_access_map = dict(data.get("r2a", {}))
+            a2r = dict(data.get("a2r", {}))
+            r2a = dict(data.get("r2a", {}))
         except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
             # A malformed/truncated/wrong-shape file must NOT be a hard startup failure
             # (a valid-JSON non-dict makes `.get`/`.items` raise AttributeError/TypeError;
@@ -412,6 +435,14 @@ class SelfHostedOAuthProvider(InMemoryOAuthProvider):
             logger.warning(
                 "Ignoring unreadable OAuth state %s (re-auth required): %s", self._state_path, exc
             )
+            return
+        # All parsed cleanly → apply atomically.
+        self.clients, self.access_tokens, self.refresh_tokens = (
+            clients,
+            access_tokens,
+            refresh_tokens,
+        )
+        self._access_to_refresh_map, self._refresh_to_access_map = a2r, r2a
 
     def __repr__(self) -> str:  # never surface the password digest
         return f"{type(self).__name__}(base_url={self.base_url!r}, clients={len(self.clients)})"

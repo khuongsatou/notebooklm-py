@@ -24,9 +24,12 @@ services:
     # `id -u`/`id -g` automatically, or set them in .env.
     user: "${NOTEBOOKLM_UID:-1000}:${NOTEBOOKLM_GID:-1000}"
     environment:
-      # Bearer token clients must present (Authorization: Bearer ...). Env-only.
-      NOTEBOOKLM_MCP_TOKEN: ${NOTEBOOKLM_MCP_TOKEN:?set NOTEBOOKLM_MCP_TOKEN in .env}
-      # Binds 0.0.0.0 (for the cloudflared sidecar) → makes the token MANDATORY.
+      # Bearer token clients present (Authorization: Bearer ...). Env-only. OPTIONAL
+      # here so an OAuth-ONLY deploy (claude.ai, no Claude Code) works — set the bearer
+      # and/or the OAuth vars below. The server's own fail-closed guard refuses to start
+      # on this 0.0.0.0 bind if NEITHER is configured (clear message in the logs).
+      NOTEBOOKLM_MCP_TOKEN: ${NOTEBOOKLM_MCP_TOKEN:-}
+      # Binds 0.0.0.0 (for the cloudflared sidecar) → requires bearer and/or OAuth.
       NOTEBOOKLM_MCP_ALLOW_EXTERNAL_BIND: "1"
       # Optional self-hosted OAuth (for claude.ai). Unset → bearer-only; set both
       # together (partial → refuses to start). See .env.example. The OAuth state

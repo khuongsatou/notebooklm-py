@@ -75,6 +75,9 @@ def test_config_off(_clear_env: None) -> None:
         ("", "https://h", "PASSWORD"),  # partial
         ("short", "https://h", "at least"),  # weak
         (_PW, "http://h", "https"),  # non-https
+        (_PW, "https://", "https"),  # https but no host
+        (_PW, "https://h?x=1", "https"),  # query not allowed
+        (_PW, "https://h#f", "https"),  # fragment not allowed
     ],
 )
 def test_config_fail_closed(
@@ -250,7 +253,7 @@ def test_login_form_escapes_reflected_sid() -> None:
 @pytest.mark.parametrize("blob", ["[1, 2, 3]", '"a string"', "not json at all", "{bad", ""])
 def test_malformed_state_file_does_not_crash(tmp_path, blob: str) -> None:
     """A truncated / wrong-shape oauth_state.json must start empty, never crash startup."""
-    (tmp_path / "oauth_state.json").write_text(blob)
+    (tmp_path / "oauth_state.json").write_text(blob, encoding="utf-8")
     p = _provider(tmp_path)  # must not raise
     assert p.clients == {}
 
