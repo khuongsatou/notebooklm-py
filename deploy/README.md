@@ -41,34 +41,60 @@ cp deploy/.env.example deploy/.env
 # CF_TUNNEL_TOKEN: from the Cloudflare dashboard (next step)
 ```
 
-## 3. Create the Cloudflare Tunnel
+## 3. Choose a tunnel
+The stack ships two tunnel sidecars as Compose **profiles** — pick one (the server
+runs under either). Both terminate TLS at their edge, so there's no cert to manage and
+no host ports are published.
+
+### 3A. Cloudflare Tunnel (needs a domain in your Cloudflare account)
 In the Cloudflare **Zero Trust** dashboard → **Networks → Tunnels**:
 1. Create a tunnel; copy its **token** into `CF_TUNNEL_TOKEN` in `.env`.
-2. Add a **Public Hostname** (e.g. `notebooklm-mcp.yourdomain.com`) →
-   **Service** `http://notebooklm-mcp:9420`. Cloudflare auto-creates the DNS
-   record and serves TLS with its own cert.
+2. Add a **Public Hostname** (e.g. `notebooklm.yourdomain.com`) → **Service**
+   `http://notebooklm-mcp:9420`. Cloudflare auto-creates the DNS record + serves TLS.
+   Route the **whole host** (path `/`) — not a `/mcp`-scoped ingress — so the root
+   OAuth routes are reachable. (Profile: `cloudflare`, the default.)
+
+### 3B. Tailscale Funnel (NO domain — free, stable `*.ts.net` HTTPS)
+Best when you don't own a domain: Tailscale Funnel gives a stable public HTTPS
+hostname on Tailscale's domain, free on the personal plan, no DNS to manage.
+1. Install Tailscale + sign in (once), and **enable Funnel** for your tailnet
+   (admin console → the node's machine settings, or the HTTPS/Funnel feature toggle).
+2. Create a **Funnel-capable auth key** (admin console → Settings → Keys) and put it in
+   `.env` as `TS_AUTHKEY`.
+3. The compose `tailscale` service runs `tailscale/tailscale` with
+   `deploy/tailscale-funnel.json` (proxies the whole root `/` → `notebooklm-mcp:9420`).
+   The node is named `notebooklm-mcp`, so your public origin is
+   `https://notebooklm-mcp.<your-tailnet>.ts.net`. (Profile: `tailscale`.)
+> Tailscale Funnel only serves on ports 443/8443/10000 — the config uses **443**, so
+> the public URL has no port suffix. The sidecar config is the standard Tailscale
+> docker-Funnel pattern; check `make logs` / `docker compose logs tailscale` on first run.
+
+Then set the matching **OAuth base URL** in `.env` (bare origin — see step 6):
+```
+# Cloudflare:  NOTEBOOKLM_MCP_OAUTH_BASE_URL=https://notebooklm.yourdomain.com
+# Tailscale:   NOTEBOOKLM_MCP_OAUTH_BASE_URL=https://notebooklm-mcp.<your-tailnet>.ts.net
+```
 
 ## 4. Run
 
-The `Makefile` wraps the two build modes — one command each:
+The `Makefile` wraps the build modes + the tunnel choice — one command each:
 
 ```bash
 cd deploy
-make dev                    # build + install THIS checkout (source) and start
-make prod VERSION=0.8.0     # build + install a published PyPI release and start
-make logs                   # tail the server log (expect: bound 0.0.0.0:9420)
-make restart                # rebuild + recreate after a source/config change
-make down                   # stop and remove
+make dev                       # build THIS checkout + start (Cloudflare tunnel, default)
+make dev TUNNEL=tailscale      # ...with the Tailscale Funnel sidecar instead
+make prod VERSION=0.8.0        # build + install a published PyPI release and start
+make logs                      # tail the server log (expect: bound 0.0.0.0:9420)
+make restart                   # rebuild + recreate after a source/config change
+make down                      # stop and remove (pass the same TUNNEL you started with)
 ```
 
-Equivalent raw compose (the image installs `notebooklm-py` two ways; build
-context is the repo root):
-- **From source (default):** `docker compose up -d --build` installs *this
-  checkout* — you deploy the exact code in the repo (right for dev / an
-  unreleased branch).
-- **From a published release:** `docker compose build --build-arg
-  NOTEBOOKLM_SPEC="notebooklm-py[mcp,headless]==0.8.0"` then `docker compose up -d`
-  (or uncomment `build.args.NOTEBOOKLM_SPEC` in `docker-compose.yml`).
+Equivalent raw compose (`--profile` selects the tunnel; build context is the repo root):
+- **Cloudflare, from source:** `docker compose --profile cloudflare up -d --build`
+- **Tailscale, from source:** `docker compose --profile tailscale up -d --build`
+- **From a published release:** add `--build-arg
+  NOTEBOOKLM_SPEC="notebooklm-py[mcp,headless]==0.8.0"` to the build (or uncomment
+  `build.args.NOTEBOOKLM_SPEC` in `docker-compose.yml`).
 
 ## 5. Connect from Claude Code
 ```bash
