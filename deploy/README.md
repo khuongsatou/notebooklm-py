@@ -91,12 +91,16 @@ vars unset to stay bearer-only (Claude Code / Desktop keep working unchanged).
 > access token**, your **AuthKit domain**, and your **project Client ID**.
 
 ### 6a. Create the AuthKit project
-1. Sign up at **dashboard.workos.com** and create an **Environment** (use the
-   *Staging* / test environment first). AuthKit is on by default for new projects;
-   if not, enable it under **Authentication**.
-2. Under **Authentication → Sign-in methods**, enable at least one method you'll log
-   in with (e.g. **Email + Password** or **Google OAuth**). This is how *you* prove
-   identity during the claude.ai login.
+1. Sign up at **dashboard.workos.com**. A **Staging** environment is created for you
+   automatically (do the whole setup there first, then repeat for Production). AuthKit
+   is on by default for new environments.
+2. **Email + Password sign-in is enabled by default**, so you can log in right away —
+   no method to turn on. To *add* a social option (Google / Microsoft / GitHub), use
+   the dashboard's **"Get started" onboarding** (it walks you through authentication
+   methods, the redirect URI, and your API keys) or the **Users** area. Exact menu
+   labels move around between WorkOS releases — follow the in-dashboard onboarding
+   rather than a fixed path. This is just how *you* prove identity at the claude.ai
+   login; the connector works with the default Email + Password.
 
 ### 6b. Enable Dynamic Client Registration (so claude.ai can self-register)
 claude.ai has no pre-shared client credentials with your server — it registers
