@@ -98,7 +98,10 @@ def test_config_ok_with_state_path(_clear_env: None, monkeypatch: pytest.MonkeyP
     monkeypatch.setenv("NOTEBOOKLM_HOME", "/data")
     monkeypatch.setenv("NOTEBOOKLM_PROFILE", "server")
     cfg = get_oauth_config()
-    assert cfg is not None and str(cfg.state_path).endswith("profiles/server/oauth_state.json")
+    assert cfg is not None and cfg.state_path is not None
+    # Path.parts is OS-agnostic (Windows uses backslash separators, so a string suffix
+    # check on forward slashes would spuriously fail on the Windows CI matrix).
+    assert cfg.state_path.parts[-3:] == ("profiles", "server", "oauth_state.json")
 
 
 # --------------------------------------------------------------------------- routes / DCR
