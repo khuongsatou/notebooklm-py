@@ -271,9 +271,14 @@ def build_authkit_provider(config: AuthKitConfig) -> AuthProvider:
         authkit_domain=config.domain.rstrip("/"),  # avoid //oauth2/jwks (404)
         base_url=config.base_url,
         client_id=config.client_id,
-        required_scopes=["openid"],  # NOT "email": that gates the scope STRING, not the claim
-        # Advertise email in the protected-resource metadata so the client requests
-        # it — maximizes the chance the access-token JWT carries the email claim.
+        # Enforce NO OAuth scope: the email allowlist is the gate, so requiring a
+        # `scope` claim (e.g. "openid") would only add a fragile dependency — if the
+        # access-token JWT lacks it, every login silently rejects. Validation rests
+        # on signature + audience(=client_id) + the allowlist, not on scopes.
+        required_scopes=[],
+        # Still ADVERTISE the standard scopes in the protected-resource metadata so
+        # the client requests `email` — maximizing the chance WorkOS injects the
+        # email claim into the access token. Advisory (advertised, not required).
         scopes_supported=["openid", "profile", "email"],
     )
     provider.token_verifier = _EmailAllowlistVerifier(
@@ -289,7 +294,7 @@ def build_auth(token: str | None, authkit: AuthProvider | None) -> AuthProvider 
       bearer; the bearer is a verifier so a non-JWT bearer falls through locally).
     * one of them → that one. * neither → ``None`` (loopback dev).
     """
-    bearer = McpBearerAuthProvider(token) if token else None
+    bearer = build_auth_provider(token)  # reuse the token→provider mapper (no dup)
     if authkit and bearer:
         from fastmcp.server.auth import MultiAuth
 

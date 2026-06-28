@@ -183,6 +183,22 @@ def test_build_authkit_serves_oauth_discovery_routes() -> None:
     assert any(".well-known/oauth-protected-resource" in p for p in paths)
 
 
+def test_protected_resource_metadata_advertises_scopes() -> None:
+    """The wrapper's own scopes_supported is [] (it forwards no required_scopes);
+    the provider must advertise the explicit scopes so a strict client requests
+    `email` — else it could omit it and the access token lacks the email claim."""
+    from starlette.applications import Starlette
+    from starlette.testclient import TestClient
+
+    provider = build_authkit_provider(_cfg())
+    # No scope is ENFORCED (the email allowlist is the gate, not OAuth scopes).
+    assert provider.token_verifier._inner.required_scopes == []
+    app = Starlette(routes=provider.get_routes())
+    with TestClient(app) as client:
+        meta = client.get("/.well-known/oauth-protected-resource").json()
+    assert "email" in meta["scopes_supported"]
+
+
 def test_build_auth_matrix() -> None:
     authkit = build_authkit_provider(_cfg())
     # bearer + authkit → MultiAuth (claude.ai OAuth + Claude Code bearer)
