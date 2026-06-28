@@ -67,7 +67,10 @@ services:
     environment:
       # From the Cloudflare Zero Trust dashboard (Networks → Tunnels). Configure
       # the tunnel's Public Hostname to point at http://notebooklm-mcp:9420.
-      TUNNEL_TOKEN: ${CF_TUNNEL_TOKEN:?set CF_TUNNEL_TOKEN in .env}
+      # `:-` not `:?` — Compose interpolates the WHOLE file before profile filtering,
+      # so a hard-required `:?` here would error even under `--profile tailscale`.
+      # cloudflared fails loudly in its own logs if this is empty when the profile runs.
+      TUNNEL_TOKEN: ${CF_TUNNEL_TOKEN:-}
     depends_on:
       # Wait until the MCP server passes its HEALTHCHECK (port listening), not
       # merely until its container starts, before bringing the tunnel up.
@@ -86,7 +89,9 @@ services:
     hostname: notebooklm-mcp   # → https://notebooklm-mcp.<your-tailnet>.ts.net
     restart: unless-stopped
     environment:
-      TS_AUTHKEY: ${TS_AUTHKEY:?set TS_AUTHKEY in .env for the tailscale profile}
+      # `:-` not `:?` (see the cloudflared note) — required only when the tailscale
+      # profile actually runs; the container errors clearly if it's empty then.
+      TS_AUTHKEY: ${TS_AUTHKEY:-}
       TS_STATE_DIR: /var/lib/tailscale
       TS_USERSPACE: "true"               # no NET_ADMIN / /dev/net/tun needed
       TS_SERVE_CONFIG: /config/funnel.json
