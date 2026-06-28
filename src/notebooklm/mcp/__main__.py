@@ -24,7 +24,14 @@ import logging
 import os
 import sys
 
-from ._auth import MCP_TOKEN_ENV, build_auth_provider, get_configured_token
+from ._auth import (
+    MCP_TOKEN_ENV,
+    AuthKitConfig,
+    build_auth,
+    build_authkit_provider,
+    get_authkit_config,
+    get_configured_token,
+)
 from .server import create_server
 
 __all__ = ["main"]
@@ -96,23 +103,25 @@ def _check_http_bind_allowed(host: str, *, allow_external: bool) -> None:
     )
 
 
-def _check_http_token_required(host: str, token: str | None) -> None:
-    """Refuse a non-loopback HTTP bind without a bearer token (fail closed).
+def _check_http_auth_required(host: str, token: str | None, authkit: AuthKitConfig | None) -> None:
+    """Refuse a non-loopback HTTP bind without SOME auth (fail closed).
 
     Keyed off the effective non-loopback bind — NOT the ``ALLOW_EXTERNAL_BIND``
-    flag — so a loopback dev run never needs a token, while any network-reachable
-    bind (which fronts a full Google account) must carry one. Mirrors the REST
-    server's ``_check_token_configured`` startup guard.
+    flag — so a loopback dev run never needs auth, while any network-reachable
+    bind (which fronts a full Google account) must carry either a bearer token
+    (Claude Code / Desktop) or WorkOS AuthKit OAuth (claude.ai). Mirrors the REST
+    server's startup guard.
 
     Raises:
-        SystemExit: ``host`` is non-loopback and ``token`` is ``None``.
+        SystemExit: ``host`` is non-loopback and neither a token nor OAuth is set.
     """
-    if not _is_loopback(host) and token is None:
+    if not _is_loopback(host) and token is None and authkit is None:
         raise SystemExit(
             f"Refusing to bind the MCP HTTP transport to non-loopback host "
-            f"'{host}' without {MCP_TOKEN_ENV} set. A network-reachable "
-            f"MCP server fronts a full Google account and must require a "
-            f"bearer token. Set {MCP_TOKEN_ENV} to a strong random value."
+            f"'{host}' without authentication. A network-reachable MCP server "
+            f"fronts a full Google account and must require auth: set "
+            f"{MCP_TOKEN_ENV} (a strong random bearer for Claude Code/Desktop) "
+            f"and/or the WorkOS AuthKit env vars (OAuth for claude.ai)."
         )
 
 
@@ -194,12 +203,15 @@ def main(argv: list[str] | None = None) -> None:
         host = args.host.strip()
         allow_external = os.environ.get(ALLOW_EXTERNAL_BIND_ENV) == "1"
         _check_http_bind_allowed(host, allow_external=allow_external)
-        # Resolve the token once, BEFORE building the server: the same value
-        # gates startup (fail closed on a network bind) and, when present,
-        # becomes the per-request bearer verifier.
+        # Resolve auth BEFORE building the server, on the http path only, so
+        # create_server stays env-free. The bearer (Claude Code/Desktop) and the
+        # optional WorkOS AuthKit OAuth (claude.ai) are both env-driven;
+        # get_authkit_config() raises on partial/no-allowlist config (fail closed).
         token = get_configured_token()
-        _check_http_token_required(host, token)
-        server = create_server(profile=args.profile, auth=build_auth_provider(token))
+        authkit_config = get_authkit_config()
+        _check_http_auth_required(host, token, authkit_config)
+        authkit = build_authkit_provider(authkit_config) if authkit_config else None
+        server = create_server(profile=args.profile, auth=build_auth(token, authkit))
         server.run(transport="http", host=host, port=_resolve_port(args.port))
     else:
         # show_banner=False keeps FastMCP's startup banner out of the host's logs

@@ -119,12 +119,17 @@ claude mcp add --transport http notebooklm https://<host>/mcp \
   --header "Authorization: Bearer $NOTEBOOKLM_MCP_TOKEN"
 ```
 
+The static bearer above works for Claude Code and Desktop. **claude.ai (web/mobile)** has an
+OAuth-only connector UI, so it needs the optional **WorkOS AuthKit OAuth** layer — opt-in and
+additive (unset → bearer-only; when set, the bearer and OAuth work side by side, with an email
+allowlist gating who OAuth admits). Setup is step 6 of [`deploy/README.md`](../deploy/README.md).
+
 Full step-by-step (incl. the security model and the read-write profile requirement) is in
 [`deploy/README.md`](../deploy/README.md). Use a **dedicated/throwaway Google account** — the
 mounted `master_token.json` is a durable full-account credential. The connector moves
 text/references only; add device files via Google Drive (`source_add` with a Drive id) or the
 NotebookLM app, and consume generated podcasts/videos in the NotebookLM app (same account).
-`OAuth` connectors and multi-tenant hosting are out of scope for this single-tenant setup.
+Multi-tenant hosting remains out of scope for this single-tenant setup.
 
 ## Core concepts
 

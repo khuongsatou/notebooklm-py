@@ -28,6 +28,12 @@ services:
       NOTEBOOKLM_MCP_TOKEN: ${NOTEBOOKLM_MCP_TOKEN:?set NOTEBOOKLM_MCP_TOKEN in .env}
       # Binds 0.0.0.0 (for the cloudflared sidecar) → makes the token MANDATORY.
       NOTEBOOKLM_MCP_ALLOW_EXTERNAL_BIND: "1"
+      # Optional WorkOS AuthKit OAuth (for claude.ai). Unset → bearer-only; set all
+      # four together (partial config refuses to start). See .env.example.
+      NOTEBOOKLM_MCP_AUTHKIT_DOMAIN: ${NOTEBOOKLM_MCP_AUTHKIT_DOMAIN:-}
+      NOTEBOOKLM_MCP_AUTHKIT_CLIENT_ID: ${NOTEBOOKLM_MCP_AUTHKIT_CLIENT_ID:-}
+      NOTEBOOKLM_MCP_AUTHKIT_BASE_URL: ${NOTEBOOKLM_MCP_AUTHKIT_BASE_URL:-}
+      NOTEBOOKLM_MCP_ALLOWED_EMAILS: ${NOTEBOOKLM_MCP_ALLOWED_EMAILS:-}
       # Point the app at the mounted profile, independent of the (arbitrary) uid's
       # home. The host dir is always mounted as the profile literally named
       # "server"; NOTEBOOKLM_HOME/profiles/server is where the app reads+writes.

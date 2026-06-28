@@ -76,9 +76,37 @@ claude mcp add --transport http notebooklm \
   https://notebooklm-mcp.yourdomain.com/mcp \
   --header "Authorization: Bearer $NOTEBOOKLM_MCP_TOKEN"
 ```
-(For Claude.ai / Desktop custom connectors, add the same URL under
-**Settings → Connectors**. The static bearer works for Claude Code today; a
-polished one-click OAuth flow is a future enhancement.)
+Claude **Desktop** also accepts the bearer. Claude **.ai** (web/mobile) does
+not — its connector UI is OAuth-only — so use step 6 for it.
+
+## 6. (Optional) Connect from claude.ai — OAuth via WorkOS AuthKit
+claude.ai's custom-connector UI has no bearer field; it speaks OAuth. WorkOS
+AuthKit (free tier) provides that OAuth layer. **This is opt-in and additive** —
+leave it unconfigured to stay bearer-only (Claude Code/Desktop keep working).
+
+1. **WorkOS dashboard** (workos.com, free): create an **AuthKit** project.
+   - **Enable Dynamic Client Registration** (Applications → Configuration) — claude.ai needs it.
+   - Add a **JWT template** that injects `email` **and** `email_verified` into the
+     **access token** (not just the ID token) — the allowlist reads them from the
+     access-token JWT. *(If your decoded access token lacks `email`, the connector
+     correctly rejects every login; this template is the fix.)*
+   - Register `https://<your-host>` as an allowed redirect.
+   - Copy the **AuthKit domain** and **Client ID**.
+2. **`.env`** — set all four (see `.env.example`); leave them blank to stay bearer-only:
+   ```
+   NOTEBOOKLM_MCP_AUTHKIT_DOMAIN=https://your-project.authkit.app
+   NOTEBOOKLM_MCP_AUTHKIT_CLIENT_ID=client_xxxxxxxx
+   NOTEBOOKLM_MCP_AUTHKIT_BASE_URL=https://<your-host>
+   NOTEBOOKLM_MCP_ALLOWED_EMAILS=you@example.com
+   ```
+   `make dev` again. (Partial config refuses to start — all four are required together.)
+3. **claude.ai → Settings → Connectors → Add custom connector** → `https://<your-host>/mcp`.
+   The browser OAuth flow runs via WorkOS; only emails in the allowlist are admitted.
+   Claude Code keeps using the bearer (both work at once).
+
+> The `email` allowlist is the real backstop — without it, *any* WorkOS-authenticated
+> user could reach your account, so it is **mandatory** whenever OAuth is enabled.
+> (You may see an `authlib.jose` deprecation line from FastMCP on startup — harmless.)
 
 ## Notes & security
 - **Two auth layers.** The `NOTEBOOKLM_MCP_TOKEN` bearer gates *who can use the
@@ -86,8 +114,9 @@ polished one-click OAuth flow is a future enhancement.)
   token **never** traverses the tunnel — only MCP tool calls/results do. The
   bearer **does** terminate at Cloudflare (Cloudflare can see it in transit, like
   any reverse-proxied request), so rotate it freely.
-- **Fail-closed.** The server refuses to start on a non-loopback bind without
-  `NOTEBOOKLM_MCP_TOKEN` set.
+- **Fail-closed.** The server refuses to start on a non-loopback bind with no
+  auth at all (neither `NOTEBOOKLM_MCP_TOKEN` nor WorkOS OAuth), and refuses
+  partial/allowlist-less OAuth config.
 - **One container per account.** Do not scale replicas off one master token —
   concurrent re-mints invalidate each other's session.
 - **Rotate the bearer**: change `NOTEBOOKLM_MCP_TOKEN` in `.env`,

@@ -187,3 +187,78 @@ def test_http_non_loopback_with_token_attaches_auth(monkeypatch: pytest.MonkeyPa
 
     fake_server.run.assert_called_once_with(transport="http", host="0.0.0.0", port=8000)
     assert isinstance(captured["auth"], McpBearerAuthProvider)
+
+
+def _set_authkit_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("NOTEBOOKLM_MCP_AUTHKIT_DOMAIN", "https://x.authkit.app")
+    monkeypatch.setenv("NOTEBOOKLM_MCP_AUTHKIT_BASE_URL", "https://host")
+    monkeypatch.setenv("NOTEBOOKLM_MCP_AUTHKIT_CLIENT_ID", "client_abc")
+    monkeypatch.setenv("NOTEBOOKLM_MCP_ALLOWED_EMAILS", "you@example.com")
+
+
+def test_http_non_loopback_with_oauth_only_satisfies_the_gate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A network bind with WorkOS OAuth configured (no bearer) starts and attaches
+    the AuthKit provider — OAuth alone satisfies the fail-closed auth requirement."""
+    from notebooklm.mcp._auth import McpBearerAuthProvider
+
+    fake_server = MagicMock()
+    captured: dict[str, object] = {}
+
+    def fake_create_server(*, profile=None, client_factory=None, auth=None):
+        captured["auth"] = auth
+        return fake_server
+
+    monkeypatch.setattr(entry, "create_server", fake_create_server)
+    monkeypatch.setenv("NOTEBOOKLM_MCP_ALLOW_EXTERNAL_BIND", "1")
+    monkeypatch.delenv("NOTEBOOKLM_MCP_TOKEN", raising=False)
+    _set_authkit_env(monkeypatch)
+
+    entry.main(["--transport", "http", "--host", "0.0.0.0", "--port", "8000"])
+
+    fake_server.run.assert_called_once()
+    auth = captured["auth"]
+    assert auth is not None and not isinstance(auth, McpBearerAuthProvider)  # the AuthKit provider
+
+
+def test_http_non_loopback_with_oauth_and_bearer_composes_multiauth(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Bearer + WorkOS OAuth → MultiAuth (claude.ai uses OAuth, Claude Code the bearer)."""
+    from fastmcp.server.auth import MultiAuth
+
+    fake_server = MagicMock()
+    captured: dict[str, object] = {}
+
+    def fake_create_server(*, profile=None, client_factory=None, auth=None):
+        captured["auth"] = auth
+        return fake_server
+
+    monkeypatch.setattr(entry, "create_server", fake_create_server)
+    monkeypatch.setenv("NOTEBOOKLM_MCP_ALLOW_EXTERNAL_BIND", "1")
+    monkeypatch.setenv("NOTEBOOKLM_MCP_TOKEN", "s3cret-token")
+    _set_authkit_env(monkeypatch)
+
+    entry.main(["--transport", "http", "--host", "0.0.0.0", "--port", "8000"])
+
+    assert isinstance(captured["auth"], MultiAuth)
+
+
+def test_http_non_loopback_partial_oauth_config_refuses(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Partial WorkOS config (missing client_id / allowlist) fails closed at startup."""
+    built = MagicMock(side_effect=AssertionError("create_server must not be reached"))
+    monkeypatch.setattr(entry, "create_server", built)
+    monkeypatch.setenv("NOTEBOOKLM_MCP_ALLOW_EXTERNAL_BIND", "1")
+    monkeypatch.delenv("NOTEBOOKLM_MCP_TOKEN", raising=False)
+    monkeypatch.setenv("NOTEBOOKLM_MCP_AUTHKIT_DOMAIN", "https://x.authkit.app")  # only one var
+    for k in (
+        "NOTEBOOKLM_MCP_AUTHKIT_BASE_URL",
+        "NOTEBOOKLM_MCP_AUTHKIT_CLIENT_ID",
+        "NOTEBOOKLM_MCP_ALLOWED_EMAILS",
+    ):
+        monkeypatch.delenv(k, raising=False)
+
+    with pytest.raises(SystemExit):
+        entry.main(["--transport", "http", "--host", "0.0.0.0", "--port", "8000"])
+    built.assert_not_called()
