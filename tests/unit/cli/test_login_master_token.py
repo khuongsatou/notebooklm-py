@@ -74,8 +74,24 @@ def test_master_token_refuses_account_clobber(tmp_path, monkeypatch):
     with patch.object(mt_service, "capture_oauth_token") as cap:
         result = CliRunner().invoke(cli, ["login", "--master-token", "--account", "e@x.com"])
     assert result.exit_code == 1
-    assert "already holds a session for other@x.com" in result.output
+    assert "already belongs to other@x.com" in result.output
     assert not cap.called  # guard fires before sign-in
+
+
+def test_master_token_refuses_clobber_via_token_owner_only(tmp_path, monkeypatch):
+    # No storage_state.json, but a master_token.json owned by a different account.
+    from notebooklm.auth import write_master_token
+    from notebooklm.paths import get_master_token_path
+
+    monkeypatch.setenv("NOTEBOOKLM_HOME", str(tmp_path))
+    mtp = get_master_token_path()
+    mtp.parent.mkdir(parents=True, exist_ok=True)
+    write_master_token(mtp, email="other@x.com", master_token="aas_et/M", android_id="abc")
+    with patch.object(mt_service, "capture_oauth_token") as cap:
+        result = CliRunner().invoke(cli, ["login", "--master-token", "--account", "e@x.com"])
+    assert result.exit_code == 1
+    assert "already belongs to other@x.com" in result.output
+    assert not cap.called
 
 
 def test_master_token_force_overwrites_other_account(tmp_path, monkeypatch):

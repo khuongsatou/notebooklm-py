@@ -37,16 +37,27 @@ def assert_account_writable(
     """Refuse to overwrite a profile that already belongs to a *different* Google
     account, unless ``force``. ``--account`` selects the account to mint; the
     profile selects where it lands — minting account B into account A's profile
-    silently clobbers A's cookies (and master token). Called early (before the
-    browser oauth_token capture) so a wrong profile fails fast."""
+    silently clobbers A's cookies *and* durable master token. Checks BOTH the
+    stored session and the existing ``master_token.json`` owner, since either can
+    be present without the other (e.g. a stale storage file beside a token for a
+    different account). Called early (before capture) so a wrong profile fails
+    fast."""
     if force:
         return
-    existing = get_account_email_for_storage(storage_path)
-    if existing and existing.casefold() != email.casefold():
-        also_token = " and its master token" if master_token_path.exists() else ""
+    try:
+        token_rec = read_master_token(master_token_path)
+    except MasterTokenError:
+        token_rec = None  # malformed token will be re-bootstrapped; not an owner signal
+    owners = {
+        owner.strip()
+        for owner in (get_account_email_for_storage(storage_path), (token_rec or {}).get("email"))
+        if isinstance(owner, str) and owner.strip()
+    }
+    conflict = next((o for o in owners if o.casefold() != email.casefold()), None)
+    if conflict:
         raise MasterTokenError(
-            f"This profile already holds a session for {existing}, but --account is "
-            f"{email}. Minting here would overwrite {existing}'s cookies{also_token}. "
+            f"This profile already belongs to {conflict}, but --account is {email}. "
+            f"Minting here would overwrite {conflict}'s session and master token. "
             "Use a dedicated profile (e.g. `notebooklm -p <name> login --master-token "
             f"--account {email}`), or pass --force to overwrite this one."
         )
