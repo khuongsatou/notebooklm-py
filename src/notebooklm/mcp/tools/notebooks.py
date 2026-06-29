@@ -63,18 +63,22 @@ def register(mcp: Any) -> None:
             # best-effort re-read to backfill just those two keys, skipping it
             # when both are already present (no wasted RPC) or the id is empty
             # (no ``get("")``). The create result stays authoritative for
-            # id/title/etc. The create already committed server-side, so a
-            # re-read failure (eventual-consistency NotebookNotFoundError, a
-            # transport blip) must degrade to the create timestamps rather than
-            # fail the create; ``except Exception`` still lets
-            # asyncio.CancelledError propagate.
+            # id/title/etc. The fill is PER-KEY and only applied when the
+            # re-read value is non-null, so a lagging re-read that returns null
+            # for a slot the create had already populated cannot REGRESS it back
+            # to null. The create already committed server-side, so a re-read
+            # failure (eventual-consistency NotebookNotFoundError, a transport
+            # blip) must degrade to the create timestamps rather than fail the
+            # create; ``except Exception`` still lets asyncio.CancelledError
+            # propagate.
             if notebook_id and (
                 record.get("created_at") is None or record.get("modified_at") is None
             ):
                 try:
                     fresh = to_jsonable(await client.notebooks.get(notebook_id))
-                    record["created_at"] = fresh.get("created_at")
-                    record["modified_at"] = fresh.get("modified_at")
+                    for key in ("created_at", "modified_at"):
+                        if fresh.get(key) is not None:
+                            record[key] = fresh[key]
                 except Exception:
                     logger.debug(
                         "notebook_create: timestamp re-read failed; returning "

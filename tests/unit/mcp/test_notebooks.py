@@ -167,6 +167,33 @@ async def test_notebook_create_skips_reread_when_timestamps_present(mcp_call, mo
     mock_client.notebooks.get.assert_not_awaited()
 
 
+async def test_notebook_create_reread_null_does_not_regress(mcp_call, mock_client) -> None:
+    """A lagging GET re-read returning null must not wipe an already-populated
+    create timestamp (#1699 per-key, non-null backfill).
+
+    Here the create result already carries ``created_at`` but not
+    ``modified_at`` (one slot null fires the re-read guard); the re-read then
+    returns BOTH null. The populated ``created_at`` must be preserved (not
+    regressed to null) and ``modified_at`` simply stays null — no exception.
+    """
+    mock_client.notebooks.create = AsyncMock(
+        return_value=FakeNotebookFull(
+            id=NB_ID, title="New", created_at=CREATED_AT, modified_at=None
+        )
+    )
+    mock_client.notebooks.get = AsyncMock(return_value=FakeNotebookFull(id=NB_ID, title="New"))
+    result = await mcp_call("notebook_create", {"title": "New"})
+    assert result.structured_content == {
+        "notebook_id": NB_ID,
+        "title": "New",
+        "created_at": CREATED_AT.isoformat(),  # preserved, NOT regressed to null
+        "sources_count": 0,
+        "is_owner": True,
+        "modified_at": None,  # stayed null, no value to backfill
+    }
+    mock_client.notebooks.get.assert_awaited_once_with(NB_ID)
+
+
 async def test_notebook_create_skips_reread_when_id_empty(mcp_call, mock_client) -> None:
     """No ``get("")`` on a degenerate empty-id create result (#1699).
 
