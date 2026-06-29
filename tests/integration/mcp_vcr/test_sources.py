@@ -14,9 +14,9 @@ Tools covered and the cassette each replays:
   ``sources_add_file.yaml`` (``ADD_SOURCE_FILE`` → ``o4cbdc`` + upload POSTs);
   ``drive`` over ``sources_add_drive.yaml`` (``ADD_SOURCE`` → ``izAoDd``).
 * ``source_rename`` over ``sources_rename.yaml`` (``UPDATE_SOURCE`` → ``b7Wfje``).
-* ``source_get_content`` over ``sources_get_fulltext.yaml`` — only the leading
-  ``GET_NOTEBOOK`` (``rLM1Ne``) is consumed (``execute_source_get`` filters the
-  source list); the trailing ``hizoJc`` interaction is left unplayed.
+* ``source_get_content`` over ``sources_get_fulltext.yaml`` — consumes BOTH the
+  leading ``GET_NOTEBOOK`` (``rLM1Ne``, metadata via ``execute_source_get``) and
+  the trailing ``hizoJc`` (``GET_SOURCE``, full text via ``execute_source_fulltext``).
 * ``source_wait`` (single + all) over ``sources_list.yaml`` — the poller probes
   source status via the same ``GET_NOTEBOOK`` list, and every recorded source is
   already ``READY`` so it resolves on the first poll.
@@ -349,14 +349,14 @@ async def test_mcp_source_rename_over_vcr() -> None:
 @pytest.mark.asyncio
 @notebooklm_vcr.use_cassette("sources_get_fulltext.yaml")
 async def test_mcp_source_get_content_over_vcr() -> None:
-    """``source_get_content`` returns the resolved source through the real client.
+    """``source_get_content`` returns the resolved source metadata AND its full text.
 
-    ``execute_source_get`` calls ``client.sources.get_or_none``, which filters the
-    notebook's ``GET_NOTEBOOK`` (``rLM1Ne``) source list — so only the cassette's
-    leading ``rLM1Ne`` interaction is consumed (the trailing ``hizoJc`` fulltext
-    interaction is left unplayed). The full-UUID source ref skips the resolver's
-    own list preflight, and the id must exist in the recorded list for the lookup
-    to return a (non-``None``) source rather than NOT_FOUND.
+    ``execute_source_get`` calls ``client.sources.get_or_none`` (filters the
+    notebook's ``GET_NOTEBOOK`` / ``rLM1Ne`` source list), then
+    ``execute_source_fulltext`` issues ``GET_SOURCE`` (``hizoJc``) — so both
+    cassette interactions are consumed. The full-UUID source ref skips the
+    resolver's own list preflight, and the id must exist in the recorded list for
+    the lookup to return a (non-``None``) source rather than NOT_FOUND.
     """
     async with build_mcp_client() as mcp_client:
         result = await mcp_client.call_tool(
@@ -369,8 +369,15 @@ async def test_mcp_source_get_content_over_vcr() -> None:
 
     structured = result.structured_content
     assert isinstance(structured, dict)
-    # ``execute_source_get`` projects to {"notebook_id", "source_id", "source"}.
-    assert set(structured) == {"notebook_id", "source_id", "source"}
+    # Now projects metadata PLUS the full-text fields.
+    assert set(structured) == {
+        "notebook_id",
+        "source_id",
+        "source",
+        "content",
+        "char_count",
+        "output_format",
+    }
     assert structured["notebook_id"] == GET_CONTENT_NOTEBOOK_ID
     assert structured["source_id"] == SOURCES_LIST_SOURCE_ID
     source = structured["source"]
@@ -379,6 +386,10 @@ async def test_mcp_source_get_content_over_vcr() -> None:
     assert source["title"] == SOURCES_LIST_SOURCE_TITLE
     assert source["url"] == "https://github.com/shareAI-lab/learn-claude-code"
     assert source["status"] == 2  # SourceStatus.READY
+    # Full text came back from the recorded GET_SOURCE interaction.
+    assert structured["output_format"] == "text"
+    assert isinstance(structured["content"], str) and structured["content"]
+    assert structured["char_count"] == len(structured["content"])
 
 
 # ---------------------------------------------------------------------------

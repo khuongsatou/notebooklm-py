@@ -30,6 +30,16 @@ class FakeSource:
     title: str | None = None
 
 
+@dataclass
+class FakeFulltext:
+    """Stand-in for ``SourceFulltext`` (what ``client.sources.get_fulltext`` returns)."""
+
+    content: str = ""
+    char_count: int = 0
+    source_id: str = ""
+    title: str = ""
+
+
 NB_ID = "11111111-1111-1111-1111-111111111111"
 SRC_ID = "33333333-3333-3333-3333-333333333333"
 SRC2_ID = "44444444-4444-4444-4444-444444444444"
@@ -61,20 +71,79 @@ async def test_source_list_resolves_notebook_by_name(mcp_call, mock_client) -> N
 
 
 async def test_source_get_content(mcp_call, mock_client) -> None:
+    """Returns the source metadata AND its full text content + char_count."""
     mock_client.sources.get_or_none = AsyncMock(return_value=FakeSource(id=SRC_ID, title="Doc"))
+    mock_client.sources.get_fulltext = AsyncMock(
+        return_value=FakeFulltext(content="hello world", char_count=11)
+    )
     result = await mcp_call("source_get_content", {"notebook": NB_ID, "source": SRC_ID})
     assert result.structured_content == {
         "notebook_id": NB_ID,
         "source_id": SRC_ID,
         "source": {"id": SRC_ID, "title": "Doc"},
+        "content": "hello world",
+        "char_count": 11,
+        "output_format": "text",
     }
     mock_client.sources.get_or_none.assert_awaited_once_with(NB_ID, SRC_ID)
+    mock_client.sources.get_fulltext.assert_awaited_once_with(NB_ID, SRC_ID, output_format="text")
+
+
+async def test_source_get_content_markdown_format(mcp_call, mock_client) -> None:
+    """``output_format='markdown'`` is forwarded to the fulltext fetch."""
+    mock_client.sources.get_or_none = AsyncMock(return_value=FakeSource(id=SRC_ID, title="Doc"))
+    mock_client.sources.get_fulltext = AsyncMock(
+        return_value=FakeFulltext(content="# Heading", char_count=9)
+    )
+    result = await mcp_call(
+        "source_get_content",
+        {"notebook": NB_ID, "source": SRC_ID, "output_format": "markdown"},
+    )
+    assert result.structured_content["content"] == "# Heading"
+    assert result.structured_content["output_format"] == "markdown"
+    mock_client.sources.get_fulltext.assert_awaited_once_with(
+        NB_ID, SRC_ID, output_format="markdown"
+    )
+
+
+async def test_source_get_content_invalid_format_is_validation_error(mcp_call, mock_client) -> None:
+    with pytest.raises(ToolError) as excinfo:
+        await mcp_call(
+            "source_get_content",
+            {"notebook": NB_ID, "source": SRC_ID, "output_format": "pdf"},
+        )
+    assert "VALIDATION" in str(excinfo.value)
+
+
+async def test_source_get_content_unavailable_body_returns_null_content(
+    mcp_call, mock_client
+) -> None:
+    """A still-processing source (fulltext NOT_FOUND) returns metadata + content=null."""
+    mock_client.sources.get_or_none = AsyncMock(return_value=FakeSource(id=SRC_ID, title="Doc"))
+    mock_client.sources.get_fulltext = AsyncMock(side_effect=SourceNotFoundError(SRC_ID))
+    result = await mcp_call("source_get_content", {"notebook": NB_ID, "source": SRC_ID})
+    assert result.structured_content["source"] == {"id": SRC_ID, "title": "Doc"}
+    assert result.structured_content["content"] is None
+    assert result.structured_content["char_count"] == 0
+
+
+async def test_source_get_content_empty_body_normalized_to_null(mcp_call, mock_client) -> None:
+    """An empty extracted body (``""``) is surfaced as ``null``, not an empty string."""
+    mock_client.sources.get_or_none = AsyncMock(return_value=FakeSource(id=SRC_ID, title="Doc"))
+    mock_client.sources.get_fulltext = AsyncMock(
+        return_value=FakeFulltext(content="", char_count=0)
+    )
+    result = await mcp_call("source_get_content", {"notebook": NB_ID, "source": SRC_ID})
+    assert result.structured_content["content"] is None
 
 
 async def test_source_get_content_resolves_source_by_name(mcp_call, mock_client) -> None:
     """A non-id ``source`` ref resolves by exact title within the notebook."""
     mock_client.sources.list = AsyncMock(return_value=[FakeSource(id=SRC_ID, title="Paper")])
     mock_client.sources.get_or_none = AsyncMock(return_value=FakeSource(id=SRC_ID, title="Paper"))
+    mock_client.sources.get_fulltext = AsyncMock(
+        return_value=FakeFulltext(content="body", char_count=4)
+    )
     result = await mcp_call("source_get_content", {"notebook": NB_ID, "source": "Paper"})
     assert result.structured_content["source_id"] == SRC_ID
     mock_client.sources.get_or_none.assert_awaited_once_with(NB_ID, SRC_ID)
