@@ -84,6 +84,30 @@ def _source_view(source: Any) -> dict[str, Any]:
     return view
 
 
+#: Surfaced when a URL/YouTube add lands READY with no title — the zero-RPC
+#: signal that the page is likely a dead link / empty / paywalled (a soft-404 that
+#: served a 200). Shared by single + batch so the two paths cannot drift. Never a
+#: rejection: a legitimately untitled live page keeps importing, just flagged.
+_THIN_SOURCE_WARNING = (
+    "Added and ready, but the fetched page has no title — it may be a dead link "
+    "or an empty/paywalled page; verify with source_get_content."
+)
+
+
+def _thin_source_warning(source: Any) -> str | None:
+    """Flag a ready-but-untitled add (likely a dead/soft-404 link), else ``None``.
+
+    ponytail: title-only is the ceiling — a zero-RPC heuristic off the add
+    response. It won't catch a soft-404 that returns a plausible title; the only
+    upgrade is a ready-gated fulltext probe (extra RPC), deferred unless
+    false-negatives bite. ``char_count`` lives on ``SourceFulltext``, not the
+    ``Source`` echoed here, so it is not available without that extra fetch.
+    """
+    if source.is_ready and not (source.title or "").strip():
+        return _THIN_SOURCE_WARNING
+    return None
+
+
 def _add_result_payload(source: Any, base: dict[str, Any]) -> dict[str, Any]:
     """Project a ``source_add`` result: enrich the added source + flag failure.
 
@@ -385,7 +409,9 @@ def register(mcp: Any) -> None:
         only AFTER processing. Confirm the outcome with ``source_wait`` or
         ``source_list(status="error")``. When the add response ALREADY reflects a
         failed import, ``source_add`` flags it inline (``status_label="error"`` plus
-        a top-level ``warning``) instead of looking like a clean add.
+        a top-level ``warning``) instead of looking like a clean add. A ``url`` /
+        ``youtube`` add that lands READY with no title is similarly flagged with a
+        ``warning`` (likely a dead link / empty / paywalled page) — never rejected.
 
         **Batch mode** — pass ``urls`` (a list of **http/https URLs**, YouTube links
         included) to add many in one call instead of one round-trip each. Each entry
@@ -493,7 +519,16 @@ def register(mcp: Any) -> None:
                 mime_type=mime_type,
                 allow_internal=allow_internal,
             )
-            return _add_result_payload(src, to_jsonable(add_core.SourceAddResult(source=src)))
+            payload = _add_result_payload(src, to_jsonable(add_core.SourceAddResult(source=src)))
+            # Thin-title (dead/soft-404) warning is scoped to url/youtube ONLY — a
+            # ready text/file source can legitimately be untitled, so it is NOT
+            # flagged here (and never inside the generic _add_result_payload). An
+            # is_error warning already set takes precedence (error > thin).
+            if source_type in {"url", "youtube"} and "warning" not in payload:
+                thin = _thin_source_warning(src)
+                if thin is not None:
+                    payload["warning"] = thin
+            return payload
 
 
 def _is_http_transport() -> bool:
@@ -655,9 +690,9 @@ async def _add_url_batch(
     single-mode failure raises.
 
     An ``"added"`` item also carries the source's ``status_label`` (the async-import
-    status) and, when the add response already reflects a failed import
-    (``is_error``), an inline ``warning`` — mirroring single mode's
-    :func:`_add_result_payload` failure-signaling (#1679) per entry.
+    status) and an inline ``warning`` when either the add reflects a failed import
+    (``is_error``, #1679) or it landed READY with no title (likely a dead/soft-404
+    link, #1698 — see :func:`_thin_source_warning`); ``is_error`` takes precedence.
     """
     results: list[dict[str, Any]] = []
     for entry in urls:
@@ -687,6 +722,12 @@ async def _add_url_batch(
                     "(status_label='error'). Delete it with source_delete, or list "
                     "failures via source_list(status='error')."
                 )
+            else:
+                # Batch is URL-only by construction, so the thin-title (dead/soft-404)
+                # warning applies per item. is_error takes precedence (handled above).
+                thin = _thin_source_warning(src)
+                if thin is not None:
+                    item["warning"] = thin
             results.append(item)
     # Derive the tallies from `results` (single source of truth) rather than
     # maintaining parallel counters that must be kept in sync with each append.

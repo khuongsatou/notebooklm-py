@@ -996,6 +996,143 @@ async def test_source_add_batch_conflicts_with_source_type(mcp_call, mock_client
     assert "VALIDATION" in str(excinfo.value)
 
 
+# --- #1698 thin/empty-title warning (url/youtube only, no extra RPC) ----------
+
+
+@pytest.mark.parametrize("blank_title", [None, "", "   "])
+async def test_source_add_url_thin_title_warns(mcp_call, mock_client, blank_title) -> None:
+    """A url add that lands READY with a blank/empty title is flagged inline as a
+    likely dead/soft-404 link — a ``warning``, never a rejection. (``"   "`` proves
+    the helper's ``.strip()``; the source is still echoed status_label='ready'.)"""
+    mock_client.sources.add_url = AsyncMock(return_value=FakeSource(id=SRC_ID, title=blank_title))
+    result = await mcp_call(
+        "source_add", {"notebook": NB_ID, "source_type": "url", "url": "https://example.com/404"}
+    )
+    sc = result.structured_content
+    assert sc["source"]["status_label"] == "ready"
+    assert "dead link" in sc["warning"]
+
+
+async def test_source_add_youtube_thin_title_warns(mcp_call, mock_client) -> None:
+    """The thin-title warning also covers the ``youtube`` single-add branch."""
+    yt = "https://www.youtube.com/watch?v=abc123"
+    mock_client.sources.add_url = AsyncMock(return_value=FakeSource(id=SRC_ID))  # title=None
+    result = await mcp_call("source_add", {"notebook": NB_ID, "source_type": "youtube", "url": yt})
+    assert "dead link" in result.structured_content["warning"]
+
+
+async def test_source_add_url_real_title_no_warning(mcp_call, mock_client) -> None:
+    """A ready url add WITH a real title carries no thin-title warning."""
+    mock_client.sources.add_url = AsyncMock(return_value=FakeSource(id=SRC_ID, title="Real Title"))
+    result = await mcp_call(
+        "source_add", {"notebook": NB_ID, "source_type": "url", "url": "https://example.com/a"}
+    )
+    assert "warning" not in result.structured_content
+
+
+async def test_source_add_text_blank_title_no_thin_warning(mcp_call, mock_client) -> None:
+    """Scope guard (#1698): a ready TEXT source with no title is legitimate, so it
+    is NOT flagged by the url-scoped thin-title heuristic — even though text shares
+    the single-add final block (_select_content → _add_one → payload) with url."""
+    mock_client.sources.add_text = AsyncMock(return_value=FakeSource(id=SRC_ID))  # title=None
+    result = await mcp_call(
+        "source_add", {"notebook": NB_ID, "source_type": "text", "text": "hello world"}
+    )
+    assert "warning" not in result.structured_content
+
+
+async def test_source_add_drive_blank_title_no_thin_warning(mcp_call, mock_client) -> None:
+    """Scope guard (#1698): a ready DRIVE source with no title is NOT flagged."""
+    mock_client.sources.add_drive = AsyncMock(return_value=FakeSource(id=SRC_ID))  # title=None
+    result = await mcp_call(
+        "source_add", {"notebook": NB_ID, "source_type": "drive", "document_id": "drivefile123"}
+    )
+    assert "warning" not in result.structured_content
+
+
+async def test_source_add_file_blank_title_no_thin_warning(mcp_call, mock_client, tmp_path) -> None:
+    """Scope guard (#1698): a ready FILE source with no title is NOT flagged. File
+    flows through the SAME single-add final block as url, so this pins that the
+    warning is gated on source_type, not just on a missing title."""
+    f = tmp_path / "doc.pdf"
+    f.write_bytes(b"%PDF-1.4 test content")
+    mock_client.sources.add_file = AsyncMock(return_value=FakeSource(id=SRC_ID))  # title=None
+    result = await mcp_call(
+        "source_add", {"notebook": NB_ID, "source_type": "file", "path": str(f)}
+    )
+    assert "warning" not in result.structured_content
+
+
+async def test_source_add_url_error_takes_precedence_over_thin(mcp_call, mock_client) -> None:
+    """An is_error add (also title-less) keeps its #1679 import-failed warning — the
+    error message wins, the thin-title text does not override it."""
+    mock_client.sources.add_url = AsyncMock(return_value=FakeFailedSource(id=SRC_ID))  # title=None
+    result = await mcp_call(
+        "source_add", {"notebook": NB_ID, "source_type": "url", "url": "https://example.com/bad"}
+    )
+    sc = result.structured_content
+    assert sc["source"]["status_label"] == "error"
+    assert "Import failed" in sc["warning"]
+    assert "dead link" not in sc["warning"]
+
+
+async def test_source_add_url_not_ready_blank_title_no_warning(mcp_call, mock_client) -> None:
+    """A still-processing (not-ready) url add with a blank title gets NO thin-title
+    warning: the helper gates on ``is_ready``, so a fresh async import in flight is
+    never pre-flagged as a dead link (it has no title YET)."""
+    mock_client.sources.add_url = AsyncMock(
+        return_value=FakeNotReadySource(id=SRC_ID)
+    )  # title=None
+    result = await mcp_call(
+        "source_add", {"notebook": NB_ID, "source_type": "url", "url": "https://example.com/slow"}
+    )
+    sc = result.structured_content
+    assert sc["source"]["status_label"] == "processing"
+    assert "warning" not in sc
+
+
+async def test_source_add_batch_not_ready_blank_title_no_warning(mcp_call, mock_client) -> None:
+    """Batch: a not-ready item with a blank title is likewise not pre-flagged."""
+    mock_client.sources.add_url = AsyncMock(
+        return_value=FakeNotReadySource(id=SRC_ID)
+    )  # title=None
+    result = await mcp_call("source_add", {"notebook": NB_ID, "urls": ["https://example.com/slow"]})
+    item = result.structured_content["results"][0]
+    assert item["status"] == "added"
+    assert item["status_label"] == "processing"
+    assert "warning" not in item
+
+
+async def test_source_add_batch_thin_title_warns(mcp_call, mock_client) -> None:
+    """Batch (#1698): a ready URL item with a blank title gets the SAME thin-title
+    warning per item — the shared constant keeps single + batch from drifting."""
+    mock_client.sources.add_url = AsyncMock(return_value=FakeSource(id=SRC_ID))  # title=None
+    result = await mcp_call("source_add", {"notebook": NB_ID, "urls": ["https://example.com/404"]})
+    sc = result.structured_content
+    assert sc["added"] == 1
+    item = sc["results"][0]
+    assert item["status"] == "added"
+    assert item["status_label"] == "ready"
+    assert "dead link" in item["warning"]
+
+
+async def test_source_add_batch_real_title_no_warning(mcp_call, mock_client) -> None:
+    """Batch: a ready URL item WITH a title carries no thin-title warning."""
+    mock_client.sources.add_url = AsyncMock(return_value=FakeSource(id=SRC_ID, title="Page"))
+    result = await mcp_call("source_add", {"notebook": NB_ID, "urls": ["https://example.com/a"]})
+    assert "warning" not in result.structured_content["results"][0]
+
+
+async def test_source_add_batch_error_takes_precedence_over_thin(mcp_call, mock_client) -> None:
+    """Batch: an is_error item (also title-less) keeps its import-failed warning,
+    not the thin-title text (error precedence mirrors single mode)."""
+    mock_client.sources.add_url = AsyncMock(return_value=FakeFailedSource(id=SRC_ID))  # title=None
+    result = await mcp_call("source_add", {"notebook": NB_ID, "urls": ["https://example.com/bad"]})
+    item = result.structured_content["results"][0]
+    assert "Import failed" in item["warning"]
+    assert "dead link" not in item["warning"]
+
+
 @pytest.mark.parametrize(
     "scalar",
     [
