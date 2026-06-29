@@ -114,6 +114,11 @@ def register(mcp: Any) -> None:
                     # extra, which the server may not have installed. Surface a
                     # deterministic CONFIG error (with the install hint) rather than
                     # the bug-class UNEXPECTED a bare ImportError would project as.
+                    # Restrict the remap to the markdown path: an ImportError on the
+                    # text path (or a future regression) is genuinely unexpected and
+                    # must keep propagating as such, not be mislabeled CONFIG.
+                    if output_format != "markdown":
+                        raise
                     raise ConfigurationError(str(exc)) from exc
                 content = fulltext.fulltext.content or None
                 char_count = fulltext.fulltext.char_count

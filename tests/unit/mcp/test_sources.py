@@ -160,6 +160,16 @@ async def test_source_get_content_markdown_missing_extra_is_config_error(
     assert "markdownify" in msg  # the actionable install hint survives
 
 
+async def test_source_get_content_text_import_error_not_remapped(mcp_call, mock_client) -> None:
+    """An ImportError on the TEXT path is genuinely unexpected — it must NOT be
+    relabeled CONFIG (the remap is restricted to the markdown case)."""
+    mock_client.sources.get_or_none = AsyncMock(return_value=FakeSource(id=SRC_ID, title="Doc"))
+    mock_client.sources.get_fulltext = AsyncMock(side_effect=ImportError("unrelated boom"))
+    with pytest.raises(ToolError) as excinfo:
+        await mcp_call("source_get_content", {"notebook": NB_ID, "source": SRC_ID})
+    assert "CONFIG" not in str(excinfo.value)
+
+
 async def test_source_get_content_not_ready_returns_null_without_fetch(
     mcp_call, mock_client
 ) -> None:
