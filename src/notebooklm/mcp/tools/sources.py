@@ -36,6 +36,7 @@ from ...exceptions import (
     SourceTimeoutError,
     ValidationError,
 )
+from ...types import source_status_to_str
 from ...urls import is_youtube_url
 from .._confirm import DESTRUCTIVE, READ_ONLY, needs_confirmation
 from .._context import get_client, get_file_transfer
@@ -68,15 +69,15 @@ def _source_view(source: Any) -> dict[str, Any]:
     ``"pdf"``/``"web_page"``) and ``status_label`` (e.g. ``"ready"``/``"error"``)
     string labels alongside the raw codes.
 
-    ``status_label`` is the lower-cased ``SourceStatus`` member name (one of
-    ``ready``/``processing``/``error``/``preparing`` — the same vocabulary the
-    ``source_list`` ``status`` filter accepts). ``status`` is always a
-    ``SourceStatus`` enum (the dataclass default + every construction path).
+    ``status_label`` comes from :func:`~notebooklm.rpc.types.source_status_to_str`
+    — the repo's single source of truth for status→string — so the MCP label stays
+    in lock-step with the CLI surface. It is one of ``ready``/``processing``/
+    ``error``/``preparing`` (``unknown`` for an unrecognized code), the same
+    vocabulary the ``source_list`` ``status`` filter accepts.
     """
     view = to_jsonable(source)
     view["kind"] = source.kind.value
-    status = source.status
-    view["status_label"] = getattr(status, "name", str(status)).lower()
+    view["status_label"] = source_status_to_str(source.status)
     return view
 
 
@@ -132,10 +133,12 @@ def register(mcp: Any) -> None:
         with mcp_errors():
             nb_id = await resolve_notebook(client, notebook)
             sources = await client.sources.list(nb_id)
-            views = [_source_view(s) for s in sources]
+            # Filter on the raw Source BEFORE serializing, so _source_view (which
+            # runs to_jsonable) is only paid for the sources that survive the
+            # filter. Uses the same source_status_to_str label _source_view emits.
             if status is not None:
-                views = [v for v in views if v["status_label"] == status]
-            return {"notebook_id": nb_id, "sources": views}
+                sources = [s for s in sources if source_status_to_str(s.status) == status]
+            return {"notebook_id": nb_id, "sources": [_source_view(s) for s in sources]}
 
     @mcp.tool(annotations=READ_ONLY)
     async def source_get_content(
