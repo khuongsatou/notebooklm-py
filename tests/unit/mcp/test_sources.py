@@ -19,7 +19,9 @@ pytest.importorskip("fastmcp")
 
 from fastmcp.exceptions import ToolError  # noqa: E402 - after importorskip guard
 
+from notebooklm._types.sources import SourceType  # noqa: E402 - after importorskip guard
 from notebooklm.exceptions import SourceNotFoundError  # noqa: E402 - after importorskip guard
+from notebooklm.rpc.types import SourceStatus  # noqa: E402 - after importorskip guard
 
 from .conftest import AsyncMock  # noqa: E402 - after importorskip guard
 
@@ -29,9 +31,19 @@ class FakeSource:
     id: str
     title: str | None = None
 
+    # ``kind``/``status`` are properties (not fields) → mirror real Source: dropped
+    # by to_jsonable but read by the tool's _source_view to add string labels.
     @property
-    def is_ready(self) -> bool:  # mirrors Source.is_ready; not a field → not serialized
+    def is_ready(self) -> bool:
         return True
+
+    @property
+    def kind(self) -> SourceType:
+        return SourceType.WEB_PAGE
+
+    @property
+    def status(self) -> SourceStatus:
+        return SourceStatus.READY
 
 
 @dataclass
@@ -44,6 +56,14 @@ class FakeNotReadySource:
     @property
     def is_ready(self) -> bool:
         return False
+
+    @property
+    def kind(self) -> SourceType:
+        return SourceType.PDF
+
+    @property
+    def status(self) -> SourceStatus:
+        return SourceStatus.PROCESSING
 
 
 @dataclass
@@ -66,7 +86,7 @@ async def test_source_list(mcp_call, mock_client) -> None:
     result = await mcp_call("source_list", {"notebook": NB_ID})
     assert result.structured_content == {
         "notebook_id": NB_ID,
-        "sources": [{"id": SRC_ID, "title": "Doc"}],
+        "sources": [{"id": SRC_ID, "title": "Doc", "kind": "web_page", "status_label": "ready"}],
     }
     mock_client.sources.list.assert_awaited_once_with(NB_ID)
 
@@ -96,13 +116,53 @@ async def test_source_get_content(mcp_call, mock_client) -> None:
     assert result.structured_content == {
         "notebook_id": NB_ID,
         "source_id": SRC_ID,
-        "source": {"id": SRC_ID, "title": "Doc"},
+        "source": {
+            "id": SRC_ID,
+            "title": "Doc",
+            "kind": "web_page",
+            "status_label": "ready",
+        },
         "content": "hello world",
         "char_count": 11,
+        "truncated": False,
         "output_format": "text",
     }
     mock_client.sources.get_or_none.assert_awaited_once_with(NB_ID, SRC_ID)
     mock_client.sources.get_fulltext.assert_awaited_once_with(NB_ID, SRC_ID, output_format="text")
+
+
+async def test_source_get_content_windowing(mcp_call, mock_client) -> None:
+    """offset/max_chars window the body; char_count stays full; truncated reflects it."""
+    mock_client.sources.get_or_none = AsyncMock(return_value=FakeSource(id=SRC_ID, title="Doc"))
+    mock_client.sources.get_fulltext = AsyncMock(
+        return_value=FakeFulltext(content="abcdefghij", char_count=10)
+    )
+    result = await mcp_call(
+        "source_get_content",
+        {"notebook": NB_ID, "source": SRC_ID, "offset": 2, "max_chars": 3},
+    )
+    sc = result.structured_content
+    assert sc["content"] == "cde"
+    assert sc["char_count"] == 10  # full length, not the window
+    assert sc["truncated"] is True
+    # A window covering the remainder is not truncated.
+    result2 = await mcp_call(
+        "source_get_content",
+        {"notebook": NB_ID, "source": SRC_ID, "offset": 7, "max_chars": 100},
+    )
+    assert result2.structured_content["content"] == "hij"
+    assert result2.structured_content["truncated"] is False
+
+
+async def test_source_get_content_negative_window_is_validation_error(
+    mcp_call, mock_client
+) -> None:
+    with pytest.raises(ToolError) as excinfo:
+        await mcp_call(
+            "source_get_content",
+            {"notebook": NB_ID, "source": SRC_ID, "max_chars": -1},
+        )
+    assert "VALIDATION" in str(excinfo.value)
 
 
 async def test_source_get_content_markdown_format(mcp_call, mock_client) -> None:
@@ -181,7 +241,12 @@ async def test_source_get_content_not_ready_returns_null_without_fetch(
     )
     mock_client.sources.get_fulltext = AsyncMock(return_value=FakeFulltext(content="x"))
     result = await mcp_call("source_get_content", {"notebook": NB_ID, "source": SRC_ID})
-    assert result.structured_content["source"] == {"id": SRC_ID, "title": "Doc"}
+    assert result.structured_content["source"] == {
+        "id": SRC_ID,
+        "title": "Doc",
+        "kind": "pdf",
+        "status_label": "processing",
+    }
     assert result.structured_content["content"] is None
     assert result.structured_content["char_count"] == 0
     assert result.structured_content["output_format"] == "text"

@@ -24,7 +24,7 @@ This module imports NO ``click`` / ``rich`` / ``cli``.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from fastmcp import Context
 
@@ -36,10 +36,6 @@ from .._context import get_client
 from .._errors import mcp_errors
 from .._resolve import resolve_notebook
 
-#: Accepted research source / mode discriminators (validated by the client too).
-_SOURCES = ("web", "drive")
-_MODES = ("fast", "deep")
-
 
 def register(mcp: Any) -> None:
     """Register the research tools on ``mcp``."""
@@ -49,8 +45,8 @@ def register(mcp: Any) -> None:
         ctx: Context,
         notebook: str,
         query: str,
-        source: str = "web",
-        mode: str = "fast",
+        source: Literal["web", "drive"] = "web",
+        mode: Literal["fast", "deep"] = "fast",
     ) -> dict[str, Any]:
         """Start a research session in a notebook. Accepts a notebook name or ID.
 
@@ -153,6 +149,19 @@ def register(mcp: Any) -> None:
                 raise ValidationError(
                     f"Research task {task_id!r} is not among notebook {nb_id}'s "
                     "research tasks; nothing to import. Check research_status."
+                )
+            # Only a COMPLETED task has a final source set. Importing an
+            # in_progress/no_research/failed snapshot would import a partial/empty
+            # set as a "success" — refuse and tell the agent to poll first.
+            if status.status != "completed":
+                raise ValidationError(
+                    f"Research task {task_id!r} is not complete (status "
+                    f"{status.status!r}); poll research_status until 'completed' "
+                    "before importing."
+                )
+            if not status.sources:
+                raise ValidationError(
+                    f"Research task {task_id!r} completed with no sources to import."
                 )
             # TOCTOU note: ``import_sources`` imports the sources from THIS
             # ``poll_and_classify`` snapshot rather than re-fetching atomically, so
