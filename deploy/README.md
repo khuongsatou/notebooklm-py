@@ -57,17 +57,31 @@ In the Cloudflare **Zero Trust** dashboard → **Networks → Tunnels**:
 ### 3B. Tailscale Funnel (NO domain — free, stable `*.ts.net` HTTPS)
 Best when you don't own a domain: Tailscale Funnel gives a stable public HTTPS
 hostname on Tailscale's domain, free on the personal plan, no DNS to manage.
-1. Install Tailscale + sign in (once), and **enable Funnel** for your tailnet
-   (admin console → the node's machine settings, or the HTTPS/Funnel feature toggle).
-2. Create a **Funnel-capable auth key** (admin console → Settings → Keys) and put it in
-   `.env` as `TS_AUTHKEY`.
-3. The compose `tailscale` service runs `tailscale/tailscale` with
-   `deploy/tailscale-funnel.json` (proxies the whole root `/` → `notebooklm-mcp:9420`).
-   The node is named `notebooklm-mcp`, so your public origin is
-   `https://notebooklm-mcp.<your-tailnet>.ts.net`. (Profile: `tailscale`.)
-> Tailscale Funnel only serves on ports 443/8443/10000 — the config uses **443**, so
-> the public URL has no port suffix. The sidecar config is the standard Tailscale
-> docker-Funnel pattern; check `make logs` / `docker compose logs tailscale` on first run.
+**One-time tailnet setup** (admin console — these are policy/feature prerequisites, not
+per-machine toggles):
+1. Enable **MagicDNS** and **HTTPS certificates** for the tailnet
+   (admin console → DNS; → HTTPS Certificates).
+2. Grant the **`funnel` node attribute**: admin console → **Settings → General**, scroll
+   to **Funnel** → **Manage** → **Node attributes** (tab, bottom-left) → **Add node
+   attribute** → add `funnel`. The JSON preview shows:
+   ```json
+   { "target": ["*"], "attr": ["funnel"] }
+   ```
+3. Create a **normal auth key** (Settings → Keys) and put it in `.env` as `TS_AUTHKEY`.
+   (There is no "Funnel-capable" key type — Funnel comes from the policy in step 2.)
+
+Then the compose `tailscale` sidecar (profile `tailscale`) runs `tailscale/tailscale`
+with `deploy/tailscale/funnel.json` (`TS_SERVE_CONFIG`), which funnels public `:443 /`
+→ `notebooklm-mcp:9420` (so the OAuth routes at `/` AND `/mcp` are reachable). The node
+is `TS_HOSTNAME=notebooklm-mcp`, so your public origin is
+`https://notebooklm-mcp.<your-tailnet>.ts.net`.
+> **Find `<your-tailnet>`** on the admin console **DNS** page — the **"Tailnet name"**
+> shown there (e.g. `tailXXXXXX.ts.net`). After the sidecar is up you can also confirm
+> the full URL with `docker compose --profile tailscale exec tailscale tailscale serve status`.
+> Funnel only serves on ports 443/8443/10000 — the config uses **443**, so the URL has
+> no port suffix. The serve config is bind-mounted as a **directory** (`./tailscale` →
+> `/config`) per Tailscale's Docker requirement. Not live-verified in this repo —
+> check `docker compose --profile tailscale logs tailscale` for the served URL on first run.
 
 Then set the matching **OAuth base URL** in `.env` (bare origin — see step 6):
 ```

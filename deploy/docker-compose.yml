@@ -78,26 +78,30 @@ services:
         condition: service_healthy
 
   # --- Tunnel option B: Tailscale Funnel (NO domain; free stable *.ts.net HTTPS) --
-  # Standard tailscale/tailscale Funnel-in-Docker pattern (see Tailscale's docs). It
+  # tailscale/tailscale Funnel-in-Docker pattern (see Tailscale's Docker docs). It
   # publishes the WHOLE host root → notebooklm-mcp:9420 (so the OAuth routes at / AND
-  # /mcp are reachable). Your BASE_URL becomes https://<hostname>.<tailnet>.ts.net.
-  # NOTE: not live-verified in this repo — provide TS_AUTHKEY (a Funnel-capable auth
-  # key from the Tailscale admin console) and check `docker compose logs tailscale`.
+  # /mcp are reachable). Your BASE_URL becomes https://<TS_HOSTNAME>.<tailnet>.ts.net.
+  # PREREQS (one-time, in the Tailscale admin console): enable MagicDNS + HTTPS certs,
+  # and grant the `funnel` node attribute in the tailnet policy (Access controls →
+  # Funnel → "Add Funnel to policy"). TS_AUTHKEY is a normal auth key — Funnel comes
+  # from the policy, not the key. NOTE: not live-verified in this repo; check
+  # `docker compose --profile tailscale logs tailscale` for the served URL.
   tailscale:
     profiles: ["tailscale"]
     image: tailscale/tailscale:latest
-    hostname: notebooklm-mcp   # → https://notebooklm-mcp.<your-tailnet>.ts.net
     restart: unless-stopped
     environment:
       # `:-` not `:?` (see the cloudflared note) — required only when the tailscale
       # profile actually runs; the container errors clearly if it's empty then.
       TS_AUTHKEY: ${TS_AUTHKEY:-}
+      TS_HOSTNAME: notebooklm-mcp        # → https://notebooklm-mcp.<your-tailnet>.ts.net
       TS_STATE_DIR: /var/lib/tailscale
       TS_USERSPACE: "true"               # no NET_ADMIN / /dev/net/tun needed
       TS_SERVE_CONFIG: /config/funnel.json
     volumes:
       - tailscale-state:/var/lib/tailscale
-      - ./tailscale-funnel.json:/config/funnel.json:ro
+      # MUST mount the serve-config DIR (not the file) so tailscaled detects/reads it.
+      - ./tailscale:/config:ro
     depends_on:
       notebooklm-mcp:
         condition: service_healthy
