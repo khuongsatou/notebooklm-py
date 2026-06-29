@@ -165,7 +165,9 @@ def register(mcp: Any) -> None:
                 end = len(content) if max_chars is None else offset + max_chars
                 windowed = content[offset:end]
                 truncated = len(windowed) < (len(content) - offset)
-                content = windowed
+                # Normalize an empty slice (e.g. offset past the end) to None, matching
+                # the fetch-path contract (content is null when there's nothing to show).
+                content = windowed or None
 
             payload = to_jsonable(result)
             payload["source"] = _source_view(result.source)

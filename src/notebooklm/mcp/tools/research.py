@@ -156,7 +156,12 @@ def register(mcp: Any) -> None:
                 )
             # Only a COMPLETED task has a final source set. Importing an
             # in_progress/no_research/failed snapshot would import a partial/empty
-            # set as a "success" — refuse and tell the agent to poll first.
+            # set as a "success" — refuse with an action-appropriate message.
+            if status.status == "failed":
+                raise ValidationError(
+                    f"Research task {task_id!r} failed; it will not complete — "
+                    "start a new research session rather than polling."
+                )
             if status.status != "completed":
                 raise ValidationError(
                     f"Research task {task_id!r} is not complete (status "

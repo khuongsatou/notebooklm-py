@@ -165,6 +165,39 @@ async def test_source_get_content_negative_window_is_validation_error(
     assert "VALIDATION" in str(excinfo.value)
 
 
+async def test_source_get_content_offset_past_end_returns_null(mcp_call, mock_client) -> None:
+    """An offset past the body end yields an empty slice → normalized to null."""
+    mock_client.sources.get_or_none = AsyncMock(return_value=FakeSource(id=SRC_ID, title="Doc"))
+    mock_client.sources.get_fulltext = AsyncMock(
+        return_value=FakeFulltext(content="abc", char_count=3)
+    )
+    result = await mcp_call(
+        "source_get_content", {"notebook": NB_ID, "source": SRC_ID, "offset": 99}
+    )
+    assert result.structured_content["content"] is None
+
+
+async def test_source_wait_negative_timeout_is_validation_error(mcp_call, mock_client) -> None:
+    with pytest.raises(ToolError) as excinfo:
+        await mcp_call("source_wait", {"notebook": NB_ID, "timeout": -1.0})
+    assert "VALIDATION" in str(excinfo.value)
+
+
+async def test_source_wait_zero_interval_is_validation_error(mcp_call, mock_client) -> None:
+    with pytest.raises(ToolError) as excinfo:
+        await mcp_call("source_wait", {"notebook": NB_ID, "interval": 0.0})
+    assert "VALIDATION" in str(excinfo.value)
+
+
+def test_drive_mime_choices_match_core_map() -> None:
+    """The MCP drive-MIME tuple is duplicated from the core's ``_DRIVE_MIME_MAP``;
+    pin them equal so a new core MIME type can't silently lag the MCP validation."""
+    from notebooklm._app import source_mutations as mut_core
+    from notebooklm.mcp.tools.sources import _DRIVE_MIME_CHOICES
+
+    assert set(_DRIVE_MIME_CHOICES) == set(mut_core._DRIVE_MIME_MAP)
+
+
 async def test_source_get_content_markdown_format(mcp_call, mock_client) -> None:
     """``output_format='markdown'`` is forwarded to the fulltext fetch."""
     mock_client.sources.get_or_none = AsyncMock(return_value=FakeSource(id=SRC_ID, title="Doc"))
