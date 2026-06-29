@@ -254,7 +254,11 @@ def test_login_form_escapes_reflected_sid() -> None:
     with TestClient(Starlette(routes=p.get_routes())) as c:
         r = c.get('/login?sid="><script>alert(1)</script>')
     assert "<script>alert(1)</script>" not in r.text  # escaped, not injected
-    assert "content-security-policy" in {k.lower() for k in r.headers}
+    csp = next(v for k, v in r.headers.items() if k.lower() == "content-security-policy")
+    assert "default-src 'none'" in csp
+    # MUST NOT set form-action: a correct password POST 302s to the client's redirect_uri
+    # (e.g. claude.ai), and `form-action 'self'` would block that cross-origin callback.
+    assert "form-action" not in csp
 
 
 @pytest.mark.parametrize("blob", ["[1, 2, 3]", '"a string"', "not json at all", "{bad", ""])

@@ -368,8 +368,14 @@ class SelfHostedOAuthProvider(InMemoryOAuthProvider):
         )
         status = 401 if error else 200
         resp = create_secure_html_response(body, status_code=status)
+        # NO `form-action` directive on purpose: a correct password POST returns a 302 to
+        # the client's (SDK-validated) redirect_uri — e.g. https://claude.ai/... — and
+        # browsers apply `form-action` to redirects that result from a form submission, so
+        # `form-action 'self'` would SILENTLY BLOCK that cross-origin callback (the login
+        # appears to do nothing). The page loads no script (default-src 'none') and reflects
+        # nothing unescaped, so the form can only do what this server-rendered HTML says.
         resp.headers["Content-Security-Policy"] = (
-            "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'"
+            "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'"
         )
         return resp
 
