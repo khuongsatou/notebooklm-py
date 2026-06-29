@@ -68,9 +68,11 @@ def register(mcp: Any) -> None:
             # Drop the debug-only raw wire-protocol blob (it just burns agent context).
             payload.pop("raw_response", None)
             if references == "lite":
+                # ``or []`` (not a get-default) so a null ``references`` value is
+                # tolerated, not iterated.
                 payload["references"] = [
                     {k: ref[k] for k in _LITE_REFERENCE_FIELDS if ref.get(k) is not None}
-                    for ref in payload.get("references", [])
+                    for ref in (payload.get("references") or [])
                 ]
             return payload
 

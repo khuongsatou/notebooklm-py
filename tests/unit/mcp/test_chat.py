@@ -133,6 +133,15 @@ async def test_chat_ask_strips_raw_response_and_lite_references(mcp_call, mock_c
     assert sc["references"] == [{"source_id": "s1", "citation_number": 1, "cited_text": "quote"}]
 
 
+async def test_chat_ask_tolerates_null_references(mcp_call, mock_client) -> None:
+    """A null references value (not a list) must not crash the lite projection."""
+    mock_client.chat.ask = AsyncMock(
+        return_value=FakeAskResult(answer="42", conversation_id=CONV_ID, references=None)
+    )
+    result = await mcp_call("chat_ask", {"notebook": NB_ID, "question": "what?"})
+    assert result.structured_content["references"] == []
+
+
 async def test_chat_ask_full_references_keep_chunk_detail(mcp_call, mock_client) -> None:
     mock_client.chat.ask = AsyncMock(
         return_value=FakeAskResult(

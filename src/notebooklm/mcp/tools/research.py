@@ -59,6 +59,10 @@ def register(mcp: Any) -> None:
         """
         client = get_client(ctx)
         with mcp_errors():
+            # ``deep`` mode is web-only — reject the invalid combination at the tool
+            # boundary (the independent Literals can't express this cross-field rule).
+            if source == "drive" and mode == "deep":
+                raise ValidationError("mode 'deep' is web-only; use source 'web' for deep research")
             nb_id = await resolve_notebook(client, notebook)
             result = await client.research.start(nb_id, query, source, mode)
             return {"notebook_id": nb_id, **to_jsonable(result)}

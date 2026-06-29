@@ -23,6 +23,7 @@ than imported from ``cli/_download_specs.py``.
 
 from __future__ import annotations
 
+import asyncio
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -476,7 +477,11 @@ def register(mcp: Any) -> None:
             # works elsewhere) or an empty string gets it validated/resolved, not
             # forwarded to the backend. Omitted/empty stays None (= all sources, #1652).
             resolved_source_ids = (
-                [await resolve_source(client, nb_id, ref) for ref in source_ids]
+                list(
+                    await asyncio.gather(
+                        *(resolve_source(client, nb_id, ref) for ref in source_ids)
+                    )
+                )
                 if source_ids
                 else None
             )

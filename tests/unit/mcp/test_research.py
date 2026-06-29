@@ -85,13 +85,20 @@ async def test_research_start(mcp_call, mock_client) -> None:
     mock_client.research.start.assert_awaited_once_with(NB_ID, "quantum computing", "web", "fast")
 
 
-async def test_research_start_drive_deep(mcp_call, mock_client) -> None:
+async def test_research_start_non_default_source_mode(mcp_call, mock_client) -> None:
+    """Non-default but valid source/mode are forwarded (drive+fast; web+deep)."""
     mock_client.research.start = AsyncMock(return_value=FakeResearchStart(task_id=TASK_ID))
     await mcp_call(
         "research_start",
-        {"notebook": NB_ID, "query": "q", "source": "drive", "mode": "deep"},
+        {"notebook": NB_ID, "query": "q", "source": "drive", "mode": "fast"},
     )
-    mock_client.research.start.assert_awaited_once_with(NB_ID, "q", "drive", "deep")
+    mock_client.research.start.assert_awaited_once_with(NB_ID, "q", "drive", "fast")
+    mock_client.research.start.reset_mock()
+    await mcp_call(
+        "research_start",
+        {"notebook": NB_ID, "query": "q", "source": "web", "mode": "deep"},
+    )
+    mock_client.research.start.assert_awaited_once_with(NB_ID, "q", "web", "deep")
 
 
 async def test_research_start_resolves_notebook_by_name(mcp_call, mock_client) -> None:
@@ -251,6 +258,18 @@ async def test_research_start_invalid_source_rejected_at_schema(mcp_call, mock_c
         await mcp_call("research_start", {"notebook": NB_ID, "query": "q", "source": "ftp"})
     msg = str(excinfo.value).lower()
     assert "web" in msg and "drive" in msg
+    mock_client.research.start.assert_not_called()
+
+
+async def test_research_start_drive_deep_rejected(mcp_call, mock_client) -> None:
+    """deep mode is web-only — drive+deep is rejected at the tool boundary, no RPC."""
+    mock_client.research.start = AsyncMock(return_value=FakeResearchStart(task_id=TASK_ID))
+    with pytest.raises(ToolError) as excinfo:
+        await mcp_call(
+            "research_start",
+            {"notebook": NB_ID, "query": "q", "source": "drive", "mode": "deep"},
+        )
+    assert "VALIDATION" in str(excinfo.value)
     mock_client.research.start.assert_not_called()
 
 
