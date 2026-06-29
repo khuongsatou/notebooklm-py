@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -26,16 +27,19 @@ import pytest
 
 pytest.importorskip("fastmcp")
 
+from click.testing import CliRunner  # noqa: E402
 from fastmcp import Client  # noqa: E402 - after importorskip guard
 
 import notebooklm.auth as auth_module  # noqa: E402
+from notebooklm._app import source_add as source_add_module  # noqa: E402
+from notebooklm._types.artifacts import ArtifactStatus, ArtifactTypeCode  # noqa: E402
 from notebooklm.cli import helpers as helpers_module  # noqa: E402
 from notebooklm.cli.resolve import resolve_notebook_id, resolve_source_ids  # noqa: E402
 from notebooklm.mcp._resolve import resolve_notebook  # noqa: E402
 from notebooklm.mcp.server import create_server  # noqa: E402
 from notebooklm.mcp.tools.artifacts import _passthrough_sources  # noqa: E402
 from notebooklm.notebooklm_cli import cli  # noqa: E402
-from notebooklm.types import GenerationState  # noqa: E402
+from notebooklm.types import Artifact, GenerationState  # noqa: E402
 
 from .conftest import create_mock_client, inject_client  # noqa: E402
 
@@ -195,3 +199,140 @@ def test_notebook_resolver_parity_full_uuid() -> None:
     mcp_out = asyncio.run(resolve_notebook(client, NB))
     assert cli_out == mcp_out == NB
     client.notebooks.list.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# End-to-end per-operation parity for the heavier shared-core ops
+# (source_add, research, download). Each drives BOTH adapters and captures the
+# shared downstream call via a recorder that raises a sentinel — so neither
+# adapter's return-serialization runs (which is what made these brittle). We
+# compare the captured call, not the (discarded) result.
+# ---------------------------------------------------------------------------
+
+
+class _Captured(Exception):
+    """Raised by the recorder to short-circuit each adapter after the captured call."""
+
+
+def _recorder() -> tuple[list[tuple[tuple, dict]], Any]:
+    calls: list[tuple[tuple, dict]] = []
+
+    async def fn(*args: Any, **kwargs: Any) -> Any:
+        calls.append((args, kwargs))
+        raise _Captured
+
+    return calls, fn
+
+
+def _drive_mcp(tool: str, args: dict[str, Any], setup: Any = None) -> None:
+    client = MagicMock()
+    for ns in _NAMESPACES:
+        setattr(client, ns, MagicMock())
+    client.artifacts._list_for_download = None
+    if setup is not None:
+        setup(client)
+
+    @contextlib.asynccontextmanager
+    async def factory() -> Any:
+        yield client
+
+    async def run() -> None:
+        async with Client(create_server(client_factory=factory)) as c:
+            with contextlib.suppress(Exception):
+                await c.call_tool(tool, args)
+
+    asyncio.run(run())
+
+
+def _drive_cli(argv: list[str], setup: Any = None) -> None:
+    client = create_mock_client()
+    client.artifacts._list_for_download = None
+    if setup is not None:
+        setup(client)
+    with (
+        patch.object(helpers_module, "load_auth_from_storage", return_value={"SAPISID": "x"}),
+        patch.object(
+            auth_module, "fetch_tokens_with_domains", new_callable=AsyncMock
+        ) as mock_fetch,
+    ):
+        mock_fetch.return_value = ("csrf", "session")
+        # Exit code is non-zero (the sentinel aborts post-capture) — we assert on the
+        # captured call, not the result, so don't check exit_code here.
+        CliRunner().invoke(cli, argv, obj=inject_client(client))
+
+
+def test_source_add_url_parity() -> None:
+    """source_add(url): both adapters build the SAME SourceAddPlan + notebook id.
+
+    Both run through ``_app.source_add.execute_source_add`` → module-level
+    ``add_source(sources, notebook_id=…, plan=…)``; patching that one symbol
+    captures both adapters' calls.
+    """
+    calls, fn = _recorder()
+    with patch.object(source_add_module, "add_source", fn):
+        _drive_mcp(
+            "source_add", {"notebook": NB, "source_type": "url", "url": "https://example.com/a"}
+        )
+        _drive_cli(["source", "add", "https://example.com/a", "-n", NB])
+    assert len(calls) == 2, f"expected MCP+CLI calls, got {calls!r}"
+    mcp_kwargs, cli_kwargs = calls[0][1], calls[1][1]
+    assert mcp_kwargs["notebook_id"] == cli_kwargs["notebook_id"] == NB
+    assert mcp_kwargs["plan"] == cli_kwargs["plan"]
+
+
+def test_research_start_parity() -> None:
+    """research: MCP ``research_start`` and CLI ``source add-research`` both call
+    ``client.research.start(nb_id, query, source, mode)`` with the same args/defaults."""
+    calls_m, fn_m = _recorder()
+    _drive_mcp(
+        "research_start",
+        {"notebook": NB, "query": "AI agents"},
+        setup=lambda c: setattr(c.research, "start", fn_m),
+    )
+    calls_c, fn_c = _recorder()
+    _drive_cli(
+        ["source", "add-research", "AI agents", "-n", NB, "--no-wait"],
+        setup=lambda c: setattr(c.research, "start", fn_c),
+    )
+    assert calls_m and calls_c, f"mcp={calls_m!r} cli={calls_c!r}"
+    assert calls_m[0] == calls_c[0]  # (nb_id, query, source="web", mode="fast")
+
+
+_AUDIO_ARTIFACT = Artifact(
+    id="art1",
+    title="Podcast",
+    _artifact_type=ArtifactTypeCode.AUDIO.value,
+    status=int(ArtifactStatus.COMPLETED),
+    created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+)
+
+
+def test_download_audio_parity(tmp_path: Any) -> None:
+    """download: MCP ``artifact_download`` and CLI ``download audio`` resolve the same
+    artifact and call ``client.artifacts.download_audio`` identically (via the shared
+    ``execute_download``)."""
+    out = str(tmp_path / "out.mp3")
+
+    def setup(client: Any) -> None:
+        client.artifacts._list_for_download = None
+        client.artifacts.list = AsyncMock(return_value=[_AUDIO_ARTIFACT])
+
+    calls_m, fn_m = _recorder()
+
+    def setup_m(c: Any) -> None:
+        setup(c)
+        c.artifacts.download_audio = fn_m
+
+    calls_c, fn_c = _recorder()
+
+    def setup_c(c: Any) -> None:
+        setup(c)
+        c.artifacts.download_audio = fn_c
+
+    _drive_mcp(
+        "artifact_download", {"notebook": NB, "artifact_type": "audio", "path": out}, setup=setup_m
+    )
+    # OUTPUT_PATH is a positional arg on the CLI leaf (not -o).
+    _drive_cli(["download", "audio", out, "-n", NB], setup=setup_c)
+    assert calls_m and calls_c, f"mcp={calls_m!r} cli={calls_c!r}"
+    assert calls_m[0] == calls_c[0]
