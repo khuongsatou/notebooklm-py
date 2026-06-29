@@ -141,6 +141,7 @@ async def test_notebook_create_reread_still_null_stays_null(mcp_call, mock_clien
         "is_owner": True,
         "modified_at": None,
     }
+    mock_client.notebooks.create.assert_awaited_once_with("New")
     mock_client.notebooks.get.assert_awaited_once_with(NB_ID)
 
 
@@ -191,6 +192,7 @@ async def test_notebook_create_reread_null_does_not_regress(mcp_call, mock_clien
         "is_owner": True,
         "modified_at": None,  # stayed null, no value to backfill
     }
+    mock_client.notebooks.create.assert_awaited_once_with("New")
     mock_client.notebooks.get.assert_awaited_once_with(NB_ID)
 
 
