@@ -92,13 +92,32 @@ def _normalize_source_ids(value: Any) -> Any:
     return None if value is None else sorted(value)
 
 
-def _mcp_generate_call(artifact_type: str, method: str, extra: dict[str, Any]) -> Any:
-    """Drive the MCP ``artifact_generate`` tool; return the captured generate-method call."""
+def _normalized_call(call: Any) -> tuple[tuple, dict]:
+    """A captured generate-* call as ``(args, kwargs)`` for cross-adapter comparison.
+
+    Only ``source_ids`` is normalized (its container type differs: tuple vs list);
+    EVERY other positional/keyword arg is compared verbatim, so a divergence in any
+    default (language, audio_format, quantity, …) — not just source_ids — is caught.
+    """
+    kwargs = dict(call.kwargs)
+    kwargs["source_ids"] = _normalize_source_ids(kwargs.get("source_ids"))
+    return tuple(call.args), kwargs
+
+
+def _drive_mcp(tool: str, args: dict[str, Any], setup: Any = None, *, suppress: bool = True) -> Any:
+    """Drive an MCP ``tool`` against a fresh mocked client; return that client.
+
+    ``setup(client)`` wires the downstream method(s) the tool reaches. ``suppress``
+    swallows the call's exception so the sentinel-recorder e2e tests can capture a
+    downstream call and abort; the generate tests pass ``suppress=False`` to run the
+    full happy path (incl. return-serialization).
+    """
     client = MagicMock()
     for ns in _NAMESPACES:
         setattr(client, ns, MagicMock())
     client.artifacts._list_for_download = None
-    setattr(client.artifacts, method, AsyncMock(return_value=_FakeStatus()))
+    if setup is not None:
+        setup(client)
 
     @contextlib.asynccontextmanager
     async def factory() -> Any:
@@ -106,25 +125,28 @@ def _mcp_generate_call(artifact_type: str, method: str, extra: dict[str, Any]) -
 
     async def run() -> None:
         async with Client(create_server(client_factory=factory)) as c:
-            await c.call_tool(
-                "artifact_generate",
-                {"notebook": NB, "artifact_type": artifact_type, **extra},
-            )
+            if suppress:
+                with contextlib.suppress(Exception):
+                    await c.call_tool(tool, args)
+            else:
+                await c.call_tool(tool, args)
 
     asyncio.run(run())
-    return getattr(client.artifacts, method).await_args
+    return client
 
 
-def _cli_generate_call(cmd: str, method: str, extra_args: list[str]) -> Any:
-    """Drive the CLI ``generate <cmd>``; return the captured generate-method call."""
-    from click.testing import CliRunner
+def _drive_cli(argv: list[str], setup: Any = None, *, check_exit: bool = False) -> Any:
+    """Drive the CLI with ``argv`` against a fresh mocked client; return that client.
 
+    ``setup(client)`` wires the downstream method(s) the command reaches.
+    ``check_exit`` asserts a clean exit (the generate tests); the sentinel-recorder
+    e2e tests leave it off because the sentinel aborts the command post-capture and
+    they assert on the captured call instead.
+    """
     client = create_mock_client()
-    setattr(
-        client.artifacts,
-        method,
-        AsyncMock(return_value={"task_id": "task-1", "status": "processing"}),
-    )
+    client.artifacts._list_for_download = None
+    if setup is not None:
+        setup(client)
     with (
         patch.object(helpers_module, "load_auth_from_storage", return_value={"SAPISID": "x"}),
         patch.object(
@@ -132,10 +154,34 @@ def _cli_generate_call(cmd: str, method: str, extra_args: list[str]) -> Any:
         ) as mock_fetch,
     ):
         mock_fetch.return_value = ("csrf", "session")
-        result = CliRunner().invoke(
-            cli, ["generate", cmd, "-n", NB, *extra_args], obj=inject_client(client)
-        )
-    assert result.exit_code == 0, result.output
+        result = CliRunner().invoke(cli, argv, obj=inject_client(client))
+    if check_exit:
+        assert result.exit_code == 0, result.output
+    return client
+
+
+def _mcp_generate_call(artifact_type: str, method: str, extra: dict[str, Any]) -> Any:
+    """Drive the MCP ``artifact_generate`` tool; return the captured generate-method call."""
+    client = _drive_mcp(
+        "artifact_generate",
+        {"notebook": NB, "artifact_type": artifact_type, **extra},
+        setup=lambda c: setattr(c.artifacts, method, AsyncMock(return_value=_FakeStatus())),
+        suppress=False,
+    )
+    return getattr(client.artifacts, method).await_args
+
+
+def _cli_generate_call(cmd: str, method: str, extra_args: list[str]) -> Any:
+    """Drive the CLI ``generate <cmd>``; return the captured generate-method call."""
+    client = _drive_cli(
+        ["generate", cmd, "-n", NB, *extra_args],
+        setup=lambda c: setattr(
+            c.artifacts,
+            method,
+            AsyncMock(return_value={"task_id": "task-1", "status": "processing"}),
+        ),
+        check_exit=True,
+    )
     return getattr(client.artifacts, method).call_args
 
 
@@ -153,8 +199,10 @@ def test_omitted_source_ids_parity(cmd: str, artifact_type: str, method: str) ->
     cli_src = _normalize_source_ids(cli_call.kwargs.get("source_ids"))
     assert cli_src is None, f"CLI {cmd} omitted-sources should resolve to None, got {cli_src!r}"
     assert mcp_src is None, f"MCP {cmd} omitted-sources should resolve to None, got {mcp_src!r}"
-    # Notebook id is the first positional arg on both adapters.
-    assert mcp_call.args[0] == cli_call.args[0] == NB
+    # Full parity: notebook id (positional) AND every downstream kwarg agree, so a
+    # divergence in any default — not just source_ids — fails here.
+    assert _normalized_call(mcp_call) == _normalized_call(cli_call)
+    assert mcp_call.args[0] == NB
 
 
 def test_explicit_source_ids_parity() -> None:
@@ -165,6 +213,8 @@ def test_explicit_source_ids_parity() -> None:
     mcp_src = _normalize_source_ids(mcp_call.kwargs.get("source_ids"))
     cli_src = _normalize_source_ids(cli_call.kwargs.get("source_ids"))
     assert mcp_src == cli_src == sorted([SRC_A, SRC_B])
+    # And full parity on the rest of the call too.
+    assert _normalized_call(mcp_call) == _normalized_call(cli_call)
 
 
 # ---------------------------------------------------------------------------
@@ -222,43 +272,6 @@ def _recorder() -> tuple[list[tuple[tuple, dict]], Any]:
         raise _Captured
 
     return calls, fn
-
-
-def _drive_mcp(tool: str, args: dict[str, Any], setup: Any = None) -> None:
-    client = MagicMock()
-    for ns in _NAMESPACES:
-        setattr(client, ns, MagicMock())
-    client.artifacts._list_for_download = None
-    if setup is not None:
-        setup(client)
-
-    @contextlib.asynccontextmanager
-    async def factory() -> Any:
-        yield client
-
-    async def run() -> None:
-        async with Client(create_server(client_factory=factory)) as c:
-            with contextlib.suppress(Exception):
-                await c.call_tool(tool, args)
-
-    asyncio.run(run())
-
-
-def _drive_cli(argv: list[str], setup: Any = None) -> None:
-    client = create_mock_client()
-    client.artifacts._list_for_download = None
-    if setup is not None:
-        setup(client)
-    with (
-        patch.object(helpers_module, "load_auth_from_storage", return_value={"SAPISID": "x"}),
-        patch.object(
-            auth_module, "fetch_tokens_with_domains", new_callable=AsyncMock
-        ) as mock_fetch,
-    ):
-        mock_fetch.return_value = ("csrf", "session")
-        # Exit code is non-zero (the sentinel aborts post-capture) — we assert on the
-        # captured call, not the result, so don't check exit_code here.
-        CliRunner().invoke(cli, argv, obj=inject_client(client))
 
 
 def test_source_add_url_parity() -> None:
