@@ -168,29 +168,36 @@ async def test_notebook_create_skips_reread_when_timestamps_present(mcp_call, mo
     mock_client.notebooks.get.assert_not_awaited()
 
 
-async def test_notebook_create_reread_null_does_not_regress(mcp_call, mock_client) -> None:
-    """A lagging GET re-read returning null must not wipe an already-populated
-    create timestamp (#1699 per-key, non-null backfill).
+async def test_notebook_create_reread_backfills_missing_without_regressing(
+    mcp_call, mock_client
+) -> None:
+    """Per-key, non-null backfill in a single mixed re-read (#1699).
 
-    Here the create result already carries ``created_at`` but not
-    ``modified_at`` (one slot null fires the re-read guard); the re-read then
-    returns BOTH null. The populated ``created_at`` must be preserved (not
-    regressed to null) and ``modified_at`` simply stays null — no exception.
+    The create result carries ``created_at`` but not ``modified_at`` (one null
+    slot fires the re-read guard). The re-read then LAGS — it returns null for
+    the already-populated ``created_at`` while finally supplying
+    ``modified_at``. The populated ``created_at`` must be preserved (the lagging
+    null must NOT regress it), and the missing ``modified_at`` must be
+    backfilled from the re-read — both in the same call, no exception.
     """
     mock_client.notebooks.create = AsyncMock(
         return_value=FakeNotebookFull(
             id=NB_ID, title="New", created_at=CREATED_AT, modified_at=None
         )
     )
-    mock_client.notebooks.get = AsyncMock(return_value=FakeNotebookFull(id=NB_ID, title="New"))
+    mock_client.notebooks.get = AsyncMock(
+        return_value=FakeNotebookFull(
+            id=NB_ID, title="New", created_at=None, modified_at=MODIFIED_AT
+        )
+    )
     result = await mcp_call("notebook_create", {"title": "New"})
     assert result.structured_content == {
         "notebook_id": NB_ID,
         "title": "New",
-        "created_at": CREATED_AT.isoformat(),  # preserved, NOT regressed to null
+        "created_at": CREATED_AT.isoformat(),  # kept; re-read's lagging null ignored
         "sources_count": 0,
         "is_owner": True,
-        "modified_at": None,  # stayed null, no value to backfill
+        "modified_at": MODIFIED_AT.isoformat(),  # backfilled from the re-read
     }
     mock_client.notebooks.create.assert_awaited_once_with("New")
     mock_client.notebooks.get.assert_awaited_once_with(NB_ID)

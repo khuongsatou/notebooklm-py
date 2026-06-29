@@ -76,9 +76,13 @@ def register(mcp: Any) -> None:
             ):
                 try:
                     fresh = to_jsonable(await client.notebooks.get(notebook_id))
-                    for key in ("created_at", "modified_at"):
-                        if record.get(key) is None and fresh.get(key) is not None:
-                            record[key] = fresh[key]
+                    # ``to_jsonable`` on the ``Notebook`` dataclass always yields
+                    # a dict; the isinstance guard makes the ``.get`` reads
+                    # explicitly safe regardless.
+                    if isinstance(fresh, dict):
+                        for key in ("created_at", "modified_at"):
+                            if record.get(key) is None and fresh.get(key) is not None:
+                                record[key] = fresh[key]
                 except Exception:
                     logger.debug(
                         "notebook_create: timestamp re-read failed; returning "
