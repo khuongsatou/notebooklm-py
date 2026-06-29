@@ -73,7 +73,7 @@ RENAME_ECHOED_SOURCE_ID = "b1b9efdd-b2af-4974-ad97-16025c05f1d7"
 RENAME_ECHOED_TITLE = "VCR Test Renamed Source"
 
 # ``sources_get_fulltext.yaml`` GET_NOTEBOOK was recorded against this notebook;
-# ``source_get_content`` consumes only that leading ``rLM1Ne`` interaction.
+# ``source_get_content`` consumes its ``rLM1Ne`` (metadata) + ``hizoJc`` (full text).
 GET_CONTENT_NOTEBOOK_ID = "167481cd-23a3-4331-9a45-c8948900bf91"
 
 

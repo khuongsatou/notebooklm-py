@@ -28,7 +28,7 @@ from ..._app import source_content as content_core
 from ..._app import source_mutations as mut_core
 from ..._app import source_wait as wait_core
 from ..._app.serialize import to_jsonable
-from ...exceptions import SourceNotFoundError, ValidationError
+from ...exceptions import ConfigurationError, SourceNotFoundError, ValidationError
 from ...urls import is_youtube_url
 from .._confirm import DESTRUCTIVE, READ_ONLY, needs_confirmation
 from .._context import get_client, get_file_transfer
@@ -102,12 +102,19 @@ def register(mcp: Any) -> None:
             content: str | None = None
             char_count = 0
             if result.source.is_ready:
-                fulltext = await content_core.execute_source_fulltext(
-                    client,
-                    content_core.SourceFulltextPlan(
-                        notebook_id=nb_id, source_id=src_id, output_format=output_format
-                    ),
-                )
+                try:
+                    fulltext = await content_core.execute_source_fulltext(
+                        client,
+                        content_core.SourceFulltextPlan(
+                            notebook_id=nb_id, source_id=src_id, output_format=output_format
+                        ),
+                    )
+                except ImportError as exc:
+                    # ``output_format='markdown'`` needs the optional ``markdownify``
+                    # extra, which the server may not have installed. Surface a
+                    # deterministic CONFIG error (with the install hint) rather than
+                    # the bug-class UNEXPECTED a bare ImportError would project as.
+                    raise ConfigurationError(str(exc)) from exc
                 content = fulltext.fulltext.content or None
                 char_count = fulltext.fulltext.char_count
 

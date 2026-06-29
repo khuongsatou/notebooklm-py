@@ -138,6 +138,28 @@ async def test_source_get_content_invalid_format_rejected(mcp_call, mock_client)
     assert "text" in msg and "markdown" in msg
 
 
+async def test_source_get_content_markdown_missing_extra_is_config_error(
+    mcp_call, mock_client
+) -> None:
+    """``output_format='markdown'`` without the ``markdownify`` extra surfaces a CONFIG
+    error (with the install hint), not a bug-class UNEXPECTED."""
+    mock_client.sources.get_or_none = AsyncMock(return_value=FakeSource(id=SRC_ID, title="Doc"))
+    mock_client.sources.get_fulltext = AsyncMock(
+        side_effect=ImportError(
+            "The 'markdown' format requires the 'markdownify' package. "
+            "Install it with: pip install 'notebooklm-py[markdown]'"
+        )
+    )
+    with pytest.raises(ToolError) as excinfo:
+        await mcp_call(
+            "source_get_content",
+            {"notebook": NB_ID, "source": SRC_ID, "output_format": "markdown"},
+        )
+    msg = str(excinfo.value)
+    assert "CONFIG" in msg
+    assert "markdownify" in msg  # the actionable install hint survives
+
+
 async def test_source_get_content_not_ready_returns_null_without_fetch(
     mcp_call, mock_client
 ) -> None:
