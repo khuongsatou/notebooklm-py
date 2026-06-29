@@ -50,11 +50,27 @@ NB = "33333333-3333-3333-3333-333333333333"
 SRC_A = "11111111-1111-1111-1111-111111111111"
 SRC_B = "22222222-2222-2222-2222-222222222222"
 
-#: (cli subcommand, MCP artifact_type, client method) for source-needing kinds.
+#: (cli subcommand, MCP artifact_type, client method, mcp_extra, cli_extra) for every
+#: source-using generate kind. ``mcp_extra``/``cli_extra`` carry a kind's REQUIRED
+#: non-source input (data-table needs a description); they are NOT source_ids — the
+#: tests add sources themselves. ``mind-map`` is intentionally omitted: it renders
+#: synchronously via a different client path (tracked in #1653).
 _KINDS = [
-    ("quiz", "quiz", "generate_quiz"),
-    ("audio", "audio", "generate_audio"),
-    ("flashcards", "flashcards", "generate_flashcards"),
+    ("quiz", "quiz", "generate_quiz", {}, []),
+    ("audio", "audio", "generate_audio", {}, []),
+    ("flashcards", "flashcards", "generate_flashcards", {}, []),
+    ("video", "video", "generate_video", {}, []),
+    ("cinematic-video", "cinematic-video", "generate_cinematic_video", {}, []),
+    ("slide-deck", "slide-deck", "generate_slide_deck", {}, []),
+    ("infographic", "infographic", "generate_infographic", {}, []),
+    ("report", "report", "generate_report", {}, []),
+    (
+        "data-table",
+        "data-table",
+        "generate_data_table",
+        {"instructions": "Compare key concepts"},
+        ["Compare key concepts"],
+    ),
 ]
 
 _NAMESPACES = (
@@ -244,15 +260,20 @@ def _cli_generate_call(cmd: str, method: str, extra_args: list[str]) -> Any:
     return getattr(client.artifacts, method).call_args
 
 
-@pytest.mark.parametrize("cmd,artifact_type,method", _KINDS, ids=[k[0] for k in _KINDS])
-def test_omitted_source_ids_parity(cmd: str, artifact_type: str, method: str) -> None:
+@pytest.mark.parametrize(
+    "cmd,artifact_type,method,mcp_extra,cli_extra", _KINDS, ids=[k[0] for k in _KINDS]
+)
+def test_omitted_source_ids_parity(
+    cmd: str, artifact_type: str, method: str, mcp_extra: dict, cli_extra: list[str]
+) -> None:
     """Omitting sources: BOTH adapters must pass ``source_ids=None`` (= all sources).
 
     The #1652 regression: MCP sent an empty tuple (= zero sources, refused) while the
-    CLI sent ``None``. This asserts they agree — and that the agreed value is ``None``.
+    CLI sent ``None``. This asserts they agree — and that the agreed value is ``None`` —
+    across EVERY source-using generate kind (audio/video/slide-deck/report/…).
     """
-    mcp_call = _mcp_generate_call(artifact_type, method, {})
-    cli_call = _cli_generate_call(cmd, method, [])
+    mcp_call = _mcp_generate_call(artifact_type, method, mcp_extra)
+    cli_call = _cli_generate_call(cmd, method, cli_extra)
 
     mcp_src = _normalize_source_ids(mcp_call.kwargs.get("source_ids"))
     cli_src = _normalize_source_ids(cli_call.kwargs.get("source_ids"))
@@ -264,16 +285,80 @@ def test_omitted_source_ids_parity(cmd: str, artifact_type: str, method: str) ->
     assert mcp_call.args[0] == NB
 
 
-@pytest.mark.parametrize("cmd,artifact_type,method", _KINDS, ids=[k[0] for k in _KINDS])
-def test_explicit_source_ids_parity(cmd: str, artifact_type: str, method: str) -> None:
+@pytest.mark.parametrize(
+    "cmd,artifact_type,method,mcp_extra,cli_extra", _KINDS, ids=[k[0] for k in _KINDS]
+)
+def test_explicit_source_ids_parity(
+    cmd: str, artifact_type: str, method: str, mcp_extra: dict, cli_extra: list[str]
+) -> None:
     """With explicit (full) ids, both adapters pass the SAME ids downstream (all kinds)."""
-    mcp_call = _mcp_generate_call(artifact_type, method, {"source_ids": [SRC_A, SRC_B]})
-    cli_call = _cli_generate_call(cmd, method, ["-s", SRC_A, "-s", SRC_B])
+    mcp_call = _mcp_generate_call(
+        artifact_type, method, {**mcp_extra, "source_ids": [SRC_A, SRC_B]}
+    )
+    cli_call = _cli_generate_call(cmd, method, [*cli_extra, "-s", SRC_A, "-s", SRC_B])
 
     mcp_src = _normalize_source_ids(mcp_call.kwargs.get("source_ids"))
     cli_src = _normalize_source_ids(cli_call.kwargs.get("source_ids"))
     assert mcp_src == cli_src == sorted([SRC_A, SRC_B])
     # And full parity on the rest of the call too.
+    assert _normalized_call(mcp_call) == _normalized_call(cli_call)
+
+
+#: Per-type OPTIONS the MCP exposes as agent-settable, with a NON-DEFAULT value and the
+#: equivalent CLI flag(s). This guards that each kind's parameters/styles map to the SAME
+#: downstream call across adapters — not just source_ids.
+#:
+#: NOTE on scope: the MCP ``artifact_generate`` deliberately exposes only this curated
+#: subset (audio format/length, quiz/flashcards quantity/difficulty, report format). For
+#: video / cinematic-video / slide-deck / infographic / mind-map the MCP uses FIXED
+#: internal defaults (not agent-settable), so there is no explicit value that could
+#: diverge — their default-value parity is covered by ``test_omitted_source_ids_parity``.
+_OPTION_CASES = [
+    (
+        "audio",
+        "audio",
+        "generate_audio",
+        {"audio_format": "critique", "audio_length": "long"},
+        ["--format", "critique", "--length", "long"],
+    ),
+    (
+        "quiz",
+        "quiz",
+        "generate_quiz",
+        {"quantity": "more", "difficulty": "hard"},
+        ["--quantity", "more", "--difficulty", "hard"],
+    ),
+    (
+        "flashcards",
+        "flashcards",
+        "generate_flashcards",
+        {"quantity": "fewer", "difficulty": "easy"},
+        ["--quantity", "fewer", "--difficulty", "easy"],
+    ),
+    (
+        "report",
+        "report",
+        "generate_report",
+        {"report_format": "study-guide"},
+        ["--format", "study-guide"],
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "cmd,artifact_type,method,mcp_opts,cli_opts", _OPTION_CASES, ids=[c[0] for c in _OPTION_CASES]
+)
+def test_explicit_option_parity(
+    cmd: str, artifact_type: str, method: str, mcp_opts: dict, cli_opts: list[str]
+) -> None:
+    """Each kind's agent-settable OPTIONS/STYLES map to the SAME downstream call.
+
+    A NON-DEFAULT value for every MCP-exposed option must produce an identical
+    ``generate_*`` call from the CLI's equivalent flags — catching any per-type
+    parameter-mapping divergence (the user's concern), not just source_ids.
+    """
+    mcp_call = _mcp_generate_call(artifact_type, method, mcp_opts)
+    cli_call = _cli_generate_call(cmd, method, cli_opts)
     assert _normalized_call(mcp_call) == _normalized_call(cli_call)
 
 
