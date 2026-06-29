@@ -370,6 +370,18 @@ async def test_artifact_generate_wrong_kind_option_is_validation_error(
     assert "VALIDATION" in str(excinfo.value)
 
 
+async def test_artifact_generate_wrong_kind_message_for_optionless_kind(
+    mcp_call, mock_client
+) -> None:
+    """A kind with no per-kind options reports that clearly (not ``accepts []``)."""
+    with pytest.raises(ToolError) as excinfo:
+        await mcp_call(
+            "artifact_generate",
+            {"notebook": NB_ID, "artifact_type": "cinematic-video", "style": "classic"},
+        )
+    assert "no per-kind options" in str(excinfo.value)
+
+
 async def test_artifact_generate_style_prompt_requires_custom(mcp_call, mock_client) -> None:
     """``style_prompt`` without ``style=custom`` is rejected (core cross-field rule)."""
     mock_client.artifacts.generate_video = AsyncMock(return_value=FakeStatus(task_id=TASK_ID))
@@ -397,6 +409,10 @@ def test_kind_options_match_core_maps() -> None:
     assert _KIND_OPTIONS["slide-deck"]["deck_length"] == tuple(gp._SLIDE_LENGTH_MAP)
     assert _KIND_OPTIONS["quiz"]["quantity"] == tuple(gp._QUIZ_QUANTITY_MAP)
     assert _KIND_OPTIONS["quiz"]["difficulty"] == tuple(gp._QUIZ_DIFFICULTY_MAP)
+    # flashcards reuses the same core maps today; pin independently so a future
+    # flashcards-specific map can't drift the MCP set unnoticed.
+    assert _KIND_OPTIONS["flashcards"]["quantity"] == tuple(gp._QUIZ_QUANTITY_MAP)
+    assert _KIND_OPTIONS["flashcards"]["difficulty"] == tuple(gp._QUIZ_DIFFICULTY_MAP)
     assert _KIND_OPTIONS["infographic"]["orientation"] == tuple(gp._INFOGRAPHIC_ORIENTATION_MAP)
     assert _KIND_OPTIONS["infographic"]["detail"] == tuple(gp._INFOGRAPHIC_DETAIL_MAP)
     assert _KIND_OPTIONS["infographic"]["style"] == tuple(gp._INFOGRAPHIC_STYLE_MAP)

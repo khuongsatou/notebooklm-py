@@ -412,6 +412,35 @@ def test_explicit_option_parity(
     assert _normalized_call(mcp_call) == _normalized_call(cli_call)
 
 
+def test_mind_map_instructions_parity() -> None:
+    """CLI ``generate mind-map`` and MCP ``artifact_generate`` deliver the SAME
+    ``instructions`` to ``client.mind_maps.generate`` (interactive default).
+
+    Mind-map is excluded from the matrices above (its interactive path goes through
+    ``mind_maps.generate``, not ``artifacts.generate_*``), so this pins the cross-adapter
+    contract for the #1654 instructions fix directly: MCP previously stored the value as
+    ``description`` only and dropped it for mind-map.
+    """
+    note = "focus on the timeline"
+
+    mcp_client, mcp_exc = _drive_mcp(
+        "artifact_generate",
+        {"notebook": NB, "artifact_type": "mind-map", "instructions": note},
+        setup=lambda c: setattr(c.mind_maps, "generate", AsyncMock(return_value={"id": "mm1"})),
+    )
+    assert mcp_exc is None, f"MCP mind-map unexpectedly raised: {mcp_exc!r}"
+
+    cli_client, cli_result = _drive_cli(
+        ["generate", "mind-map", "-n", NB, "--instructions", note],
+        setup=lambda c: setattr(c.mind_maps, "generate", AsyncMock(return_value={"id": "mm1"})),
+    )
+    assert cli_result.exit_code == 0, cli_result.output
+
+    mcp_instr = mcp_client.mind_maps.generate.await_args.kwargs["instructions"]
+    cli_instr = cli_client.mind_maps.generate.await_args.kwargs["instructions"]
+    assert mcp_instr == cli_instr == note
+
+
 # ---------------------------------------------------------------------------
 # Resolver parity — every CLI/MCP operation funnels notebook/source references
 # through these shared resolvers, so pinning their agreement covers the

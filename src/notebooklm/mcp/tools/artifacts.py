@@ -474,9 +474,14 @@ def register(mcp: Any) -> None:
                 if value is None:
                     continue
                 if key not in allowed:
+                    accepts = (
+                        f"this kind accepts {sorted(allowed)}"
+                        if allowed
+                        else "this kind accepts no per-kind options"
+                    )
                     raise ValidationError(
                         f"option {key!r} is not valid for artifact_type {artifact_type!r}; "
-                        f"this kind accepts {sorted(allowed)}"
+                        f"{accepts}"
                     )
                 choices = allowed[key]
                 if choices is not None and value not in choices:
