@@ -222,18 +222,20 @@ async def test_artifact_generate_valid_language_passes(mcp_call, mock_client) ->
 
 
 async def test_artifact_generate_video_options(mcp_call, mock_client) -> None:
-    """video format/style/style_prompt reach generate_video (custom style path)."""
+    """video format/style/style_prompt all reach generate_video (custom style path)."""
     mock_client.artifacts.generate_video = AsyncMock(return_value=FakeStatus(task_id=TASK_ID))
     await mcp_call(
         "artifact_generate",
         {
             "notebook": NB_ID,
             "artifact_type": "video",
+            "video_format": "brief",
             "style": "custom",
             "style_prompt": "hand-drawn diagrams",
         },
     )
     kwargs = mock_client.artifacts.generate_video.await_args.kwargs
+    assert kwargs["video_format"].name == "BRIEF"
     assert kwargs["video_style"].name == "CUSTOM"
     assert kwargs["style_prompt"] == "hand-drawn diagrams"
 

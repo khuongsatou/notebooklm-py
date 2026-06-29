@@ -433,29 +433,17 @@ def register(mcp: Any) -> None:
             # forwarded raw to the backend. Fail with a clean VALIDATION instead.
             if language is not None and not is_supported_language(language):
                 raise ValidationError(f"Unsupported language {language!r}")
-            nb_id = await resolve_notebook(client, notebook)
-            raw_args: dict[str, Any] = dict(_KIND_DEFAULTS[artifact_type])
-            raw_args.update(
-                {
-                    "notebook_id": nb_id,
-                    "description": instructions or "",
-                    # ``mind-map`` reads ``raw_args["instructions"]`` (every other kind
-                    # reads ``description``); set it so mind-map instructions actually
-                    # reach the client — the extra key is ignored by the other builders.
-                    "instructions": instructions or None,
-                    "source_ids": tuple(source_ids or ()),
-                    "language": language,
-                    "wait": False,
-                    "json_output": True,
-                }
-            )
-            # Apply caller-supplied per-kind overrides over the defaults. Each option is
-            # validated against the choice set for THIS ``artifact_type`` (see
-            # ``_KIND_OPTIONS``): an option not accepted by this kind is rejected (the
-            # core would otherwise silently ignore it), and a bad value surfaces a clean
-            # VALIDATION error. ``style_prompt`` (choices ``None``) is free text — the
-            # core enforces the ``style=custom`` ⇔ ``style_prompt`` combination rules.
+
+            # Validate caller-supplied per-kind overrides FIRST — before resolving the
+            # notebook — so a wrong-kind or invalid option fails fast without a wasted
+            # notebook-resolution round-trip. Each option is validated against the choice
+            # set for THIS ``artifact_type`` (see ``_KIND_OPTIONS``): an option not accepted
+            # by this kind is rejected (the core would otherwise silently ignore it), and a
+            # bad value surfaces a clean VALIDATION error. ``style_prompt`` (choices
+            # ``None``) is free text — the core enforces the ``style=custom`` ⇔
+            # ``style_prompt`` combination rules.
             allowed = _KIND_OPTIONS[artifact_type]
+            overrides: dict[str, Any] = {}
             for key, value in (
                 ("report_format", report_format),
                 ("audio_format", audio_format),
@@ -488,7 +476,25 @@ def register(mcp: Any) -> None:
                     raise ValidationError(
                         f"Invalid {key} {value!r}; expected one of {list(choices)}"
                     )
-                raw_args[key] = value
+                overrides[key] = value
+
+            nb_id = await resolve_notebook(client, notebook)
+            raw_args: dict[str, Any] = dict(_KIND_DEFAULTS[artifact_type])
+            raw_args.update(
+                {
+                    "notebook_id": nb_id,
+                    "description": instructions or "",
+                    # ``mind-map`` reads ``raw_args["instructions"]`` (every other kind
+                    # reads ``description``); set it so mind-map instructions actually
+                    # reach the client — the extra key is ignored by the other builders.
+                    "instructions": instructions or None,
+                    "source_ids": tuple(source_ids or ()),
+                    "language": language,
+                    "wait": False,
+                    "json_output": True,
+                }
+            )
+            raw_args.update(overrides)
 
             plan = generate_core.build_generation_plan(artifact_type, raw_args)
             result = await generate_core.execute_generation(
