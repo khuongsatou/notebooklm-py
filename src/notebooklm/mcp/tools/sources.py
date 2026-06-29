@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import os
 import time
-from typing import Any, Literal, cast
+from typing import Any, Literal
 
 from fastmcp import Context
 from fastmcp.server.dependencies import get_http_request
@@ -60,7 +60,10 @@ def register(mcp: Any) -> None:
 
     @mcp.tool(annotations=READ_ONLY)
     async def source_get_content(
-        ctx: Context, notebook: str, source: str, output_format: str = "text"
+        ctx: Context,
+        notebook: str,
+        source: str,
+        output_format: Literal["text", "markdown"] = "text",
     ) -> dict[str, Any]:
         """Fetch a source's metadata AND its full indexed text content.
 
@@ -72,16 +75,12 @@ def register(mcp: Any) -> None:
         flattened plaintext; ``markdown`` preserves headings/tables/links/emphasis
         (requires the server's ``markdownify`` extra — otherwise a clean error).
 
-        ``content`` is ``null`` (and ``char_count`` 0) when the source has no
-        extractable text yet — e.g. it is still processing — so this tool returns
-        the metadata even before the body is available.
+        ``content`` is ``null`` (and ``char_count`` 0) when the source is not yet
+        ready (still processing / errored) or has no extractable text, so this tool
+        returns the metadata even before the body is available.
         """
         client = get_client(ctx)
         with mcp_errors():
-            if output_format not in ("text", "markdown"):
-                raise ValidationError(
-                    f"Invalid output_format {output_format!r}; expected 'text' or 'markdown'"
-                )
             nb_id = await resolve_notebook(client, notebook)
             src_id = await resolve_source(client, nb_id, source)
             result = await content_core.execute_source_get(
@@ -94,26 +93,23 @@ def register(mcp: Any) -> None:
             if result.source is None:
                 raise SourceNotFoundError(src_id)
 
-            # Fetch the full indexed text. The metadata fetch already confirmed the
-            # source exists, so a NOT_FOUND from the fulltext RPC means the body is
-            # not retrievable yet (e.g. still processing) — degrade to content=None
-            # rather than failing the whole call, so the metadata still comes back.
+            # Only fetch the body once the source is READY. A not-ready source
+            # (still processing / errored) has no retrievable text yet, so return
+            # its metadata with content=None instead of fetching. Gating on status
+            # (rather than catching the fulltext fetch's SourceNotFoundError) keeps
+            # a genuine "source is gone" — e.g. deleted between these two calls —
+            # propagating as NOT_FOUND instead of masquerading as "no content".
             content: str | None = None
             char_count = 0
-            try:
+            if result.source.is_ready:
                 fulltext = await content_core.execute_source_fulltext(
                     client,
                     content_core.SourceFulltextPlan(
-                        notebook_id=nb_id,
-                        source_id=src_id,
-                        output_format=cast(Literal["text", "markdown"], output_format),
+                        notebook_id=nb_id, source_id=src_id, output_format=output_format
                     ),
                 )
                 content = fulltext.fulltext.content or None
                 char_count = fulltext.fulltext.char_count
-            except SourceNotFoundError:
-                content = None
-                char_count = 0
 
             payload = to_jsonable(result)
             payload["content"] = content
