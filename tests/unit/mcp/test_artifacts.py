@@ -166,6 +166,17 @@ async def test_artifact_generate_omitting_source_ids_uses_all(mcp_call, mock_cli
     assert kwargs["source_ids"] is None
 
 
+async def test_artifact_generate_empty_source_ids_uses_all(mcp_call, mock_client) -> None:
+    """An EXPLICIT empty list is the same contract as omitting: => None (all sources),
+    never [] (which the backend refuses). Pins the full empty-vs-None contract."""
+    mock_client.artifacts.generate_audio = AsyncMock(return_value=FakeStatus(task_id=TASK_ID))
+    await mcp_call(
+        "artifact_generate", {"notebook": NB_ID, "artifact_type": "audio", "source_ids": []}
+    )
+    kwargs = mock_client.artifacts.generate_audio.await_args.kwargs
+    assert kwargs["source_ids"] is None
+
+
 async def test_artifact_generate_unknown_type_is_validation_error(mcp_call, mock_client) -> None:
     with pytest.raises(ToolError) as excinfo:
         await mcp_call("artifact_generate", {"notebook": NB_ID, "artifact_type": "bogus"})

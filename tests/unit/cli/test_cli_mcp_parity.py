@@ -104,13 +104,36 @@ def _normalized_call(call: Any) -> tuple[tuple, dict]:
     return tuple(call.args), kwargs
 
 
-def _drive_mcp(tool: str, args: dict[str, Any], setup: Any = None, *, suppress: bool = True) -> Any:
-    """Drive an MCP ``tool`` against a fresh mocked client; return that client.
+class _Captured(Exception):
+    """Raised by the recorder to short-circuit each adapter after the captured call.
 
-    ``setup(client)`` wires the downstream method(s) the tool reaches. ``suppress``
-    swallows the call's exception so the sentinel-recorder e2e tests can capture a
-    downstream call and abort; the generate tests pass ``suppress=False`` to run the
-    full happy path (incl. return-serialization).
+    NOTE: the MCP layer's ``mcp_errors`` wraps every exception into a ``ToolError``,
+    so this type does NOT survive the MCP boundary — which is why the drivers can't
+    simply ``suppress(_Captured)``. Instead the capture helpers below tolerate the
+    abort ONLY when a call was actually recorded, and otherwise re-raise the real
+    adapter error, so an unrelated pre-capture failure is never silently hidden.
+    """
+
+
+def _recorder() -> tuple[list[tuple[tuple, dict]], Any]:
+    """Return (calls, fn): an async fn that records each call then raises the sentinel."""
+    calls: list[tuple[tuple, dict]] = []
+
+    async def fn(*args: Any, **kwargs: Any) -> Any:
+        calls.append((args, kwargs))
+        raise _Captured
+
+    return calls, fn
+
+
+def _drive_mcp(
+    tool: str, args: dict[str, Any], setup: Any = None
+) -> tuple[Any, BaseException | None]:
+    """Drive an MCP ``tool`` against a fresh mocked client.
+
+    Returns ``(client, exc)`` where ``exc`` is the exception the call raised (or
+    ``None``). Callers classify it — the generate path expects ``None``; the e2e
+    capture path tolerates it only once a downstream call was recorded.
     """
     client = MagicMock()
     for ns in _NAMESPACES:
@@ -123,25 +146,25 @@ def _drive_mcp(tool: str, args: dict[str, Any], setup: Any = None, *, suppress: 
     async def factory() -> Any:
         yield client
 
+    captured: dict[str, BaseException] = {}
+
     async def run() -> None:
         async with Client(create_server(client_factory=factory)) as c:
-            if suppress:
-                with contextlib.suppress(Exception):
-                    await c.call_tool(tool, args)
-            else:
+            try:
                 await c.call_tool(tool, args)
+            except Exception as exc:  # noqa: BLE001 - caller classifies (see _mcp_capture)
+                captured["exc"] = exc
 
     asyncio.run(run())
-    return client
+    return client, captured.get("exc")
 
 
-def _drive_cli(argv: list[str], setup: Any = None, *, check_exit: bool = False) -> Any:
-    """Drive the CLI with ``argv`` against a fresh mocked client; return that client.
+def _drive_cli(argv: list[str], setup: Any = None) -> tuple[Any, Any]:
+    """Drive the CLI with ``argv`` against a fresh mocked client.
 
-    ``setup(client)`` wires the downstream method(s) the command reaches.
-    ``check_exit`` asserts a clean exit (the generate tests); the sentinel-recorder
-    e2e tests leave it off because the sentinel aborts the command post-capture and
-    they assert on the captured call instead.
+    Returns ``(client, result)``; ``result.exception`` / ``result.exit_code`` carry
+    any failure for the caller to classify (CliRunner captures exceptions, so a
+    sentinel abort surfaces as a non-zero exit rather than propagating).
     """
     client = create_mock_client()
     client.artifacts._list_for_download = None
@@ -155,33 +178,69 @@ def _drive_cli(argv: list[str], setup: Any = None, *, check_exit: bool = False) 
     ):
         mock_fetch.return_value = ("csrf", "session")
         result = CliRunner().invoke(cli, argv, obj=inject_client(client))
-    if check_exit:
-        assert result.exit_code == 0, result.output
-    return client
+    return client, result
+
+
+def _mcp_capture(
+    tool: str, args: dict[str, Any], namespace: str, method: str, setup: Any = None
+) -> Any:
+    """Drive an MCP tool, returning the single recorded ``namespace.method`` call.
+
+    If the tool never reached it, re-raise the REAL adapter error (chained) instead
+    of a bare empty-list assert — so a pre-capture failure is diagnosable.
+    """
+    calls, fn = _recorder()
+
+    def _setup(c: Any) -> None:
+        if setup is not None:
+            setup(c)
+        setattr(getattr(c, namespace), method, fn)
+
+    _, exc = _drive_mcp(tool, args, setup=_setup)
+    if not calls:
+        raise AssertionError(f"MCP {tool} never reached {namespace}.{method}") from exc
+    return calls[0]
+
+
+def _cli_capture(argv: list[str], namespace: str, method: str, setup: Any = None) -> Any:
+    """CLI counterpart of :func:`_mcp_capture`."""
+    calls, fn = _recorder()
+
+    def _setup(c: Any) -> None:
+        if setup is not None:
+            setup(c)
+        setattr(getattr(c, namespace), method, fn)
+
+    _, result = _drive_cli(argv, setup=_setup)
+    if not calls:
+        raise AssertionError(
+            f"CLI {argv} never reached {namespace}.{method}: {result.output}"
+        ) from result.exception
+    return calls[0]
 
 
 def _mcp_generate_call(artifact_type: str, method: str, extra: dict[str, Any]) -> Any:
     """Drive the MCP ``artifact_generate`` tool; return the captured generate-method call."""
-    client = _drive_mcp(
+    client, exc = _drive_mcp(
         "artifact_generate",
         {"notebook": NB, "artifact_type": artifact_type, **extra},
         setup=lambda c: setattr(c.artifacts, method, AsyncMock(return_value=_FakeStatus())),
-        suppress=False,
     )
+    assert exc is None, f"MCP generate {artifact_type} unexpectedly raised: {exc!r}"
     return getattr(client.artifacts, method).await_args
 
 
 def _cli_generate_call(cmd: str, method: str, extra_args: list[str]) -> Any:
     """Drive the CLI ``generate <cmd>``; return the captured generate-method call."""
-    client = _drive_cli(
+    client, result = _drive_cli(
         ["generate", cmd, "-n", NB, *extra_args],
         setup=lambda c: setattr(
             c.artifacts,
             method,
             AsyncMock(return_value={"task_id": "task-1", "status": "processing"}),
         ),
-        check_exit=True,
     )
+    assert result.exit_code == 0, result.output
     return getattr(client.artifacts, method).call_args
 
 
@@ -205,10 +264,11 @@ def test_omitted_source_ids_parity(cmd: str, artifact_type: str, method: str) ->
     assert mcp_call.args[0] == NB
 
 
-def test_explicit_source_ids_parity() -> None:
-    """With explicit (full) ids, both adapters pass the SAME ids downstream."""
-    mcp_call = _mcp_generate_call("quiz", "generate_quiz", {"source_ids": [SRC_A, SRC_B]})
-    cli_call = _cli_generate_call("quiz", "generate_quiz", ["-s", SRC_A, "-s", SRC_B])
+@pytest.mark.parametrize("cmd,artifact_type,method", _KINDS, ids=[k[0] for k in _KINDS])
+def test_explicit_source_ids_parity(cmd: str, artifact_type: str, method: str) -> None:
+    """With explicit (full) ids, both adapters pass the SAME ids downstream (all kinds)."""
+    mcp_call = _mcp_generate_call(artifact_type, method, {"source_ids": [SRC_A, SRC_B]})
+    cli_call = _cli_generate_call(cmd, method, ["-s", SRC_A, "-s", SRC_B])
 
     mcp_src = _normalize_source_ids(mcp_call.kwargs.get("source_ids"))
     cli_src = _normalize_source_ids(cli_call.kwargs.get("source_ids"))
@@ -260,20 +320,6 @@ def test_notebook_resolver_parity_full_uuid() -> None:
 # ---------------------------------------------------------------------------
 
 
-class _Captured(Exception):
-    """Raised by the recorder to short-circuit each adapter after the captured call."""
-
-
-def _recorder() -> tuple[list[tuple[tuple, dict]], Any]:
-    calls: list[tuple[tuple, dict]] = []
-
-    async def fn(*args: Any, **kwargs: Any) -> Any:
-        calls.append((args, kwargs))
-        raise _Captured
-
-    return calls, fn
-
-
 def test_source_add_url_parity() -> None:
     """source_add(url): both adapters build the SAME SourceAddPlan + notebook id.
 
@@ -283,11 +329,14 @@ def test_source_add_url_parity() -> None:
     """
     calls, fn = _recorder()
     with patch.object(source_add_module, "add_source", fn):
-        _drive_mcp(
+        _, mcp_exc = _drive_mcp(
             "source_add", {"notebook": NB, "source_type": "url", "url": "https://example.com/a"}
         )
-        _drive_cli(["source", "add", "https://example.com/a", "-n", NB])
-    assert len(calls) == 2, f"expected MCP+CLI calls, got {calls!r}"
+        _, cli_result = _drive_cli(["source", "add", "https://example.com/a", "-n", NB])
+    assert len(calls) == 2, (
+        f"both adapters must reach add_source; got {len(calls)} "
+        f"(mcp_exc={mcp_exc!r}, cli_exit={cli_result.exit_code}, cli_out={cli_result.output!r})"
+    )
     mcp_kwargs, cli_kwargs = calls[0][1], calls[1][1]
     assert mcp_kwargs["notebook_id"] == cli_kwargs["notebook_id"] == NB
     assert mcp_kwargs["plan"] == cli_kwargs["plan"]
@@ -296,19 +345,13 @@ def test_source_add_url_parity() -> None:
 def test_research_start_parity() -> None:
     """research: MCP ``research_start`` and CLI ``source add-research`` both call
     ``client.research.start(nb_id, query, source, mode)`` with the same args/defaults."""
-    calls_m, fn_m = _recorder()
-    _drive_mcp(
-        "research_start",
-        {"notebook": NB, "query": "AI agents"},
-        setup=lambda c: setattr(c.research, "start", fn_m),
+    mcp = _mcp_capture(
+        "research_start", {"notebook": NB, "query": "AI agents"}, "research", "start"
     )
-    calls_c, fn_c = _recorder()
-    _drive_cli(
-        ["source", "add-research", "AI agents", "-n", NB, "--no-wait"],
-        setup=lambda c: setattr(c.research, "start", fn_c),
+    cli = _cli_capture(
+        ["source", "add-research", "AI agents", "-n", NB, "--no-wait"], "research", "start"
     )
-    assert calls_m and calls_c, f"mcp={calls_m!r} cli={calls_c!r}"
-    assert calls_m[0] == calls_c[0]  # (nb_id, query, source="web", mode="fast")
+    assert mcp == cli  # (nb_id, query, source="web", mode="fast")
 
 
 _AUDIO_ARTIFACT = Artifact(
@@ -330,22 +373,15 @@ def test_download_audio_parity(tmp_path: Any) -> None:
         client.artifacts._list_for_download = None
         client.artifacts.list = AsyncMock(return_value=[_AUDIO_ARTIFACT])
 
-    calls_m, fn_m = _recorder()
-
-    def setup_m(c: Any) -> None:
-        setup(c)
-        c.artifacts.download_audio = fn_m
-
-    calls_c, fn_c = _recorder()
-
-    def setup_c(c: Any) -> None:
-        setup(c)
-        c.artifacts.download_audio = fn_c
-
-    _drive_mcp(
-        "artifact_download", {"notebook": NB, "artifact_type": "audio", "path": out}, setup=setup_m
+    mcp = _mcp_capture(
+        "artifact_download",
+        {"notebook": NB, "artifact_type": "audio", "path": out},
+        "artifacts",
+        "download_audio",
+        setup=setup,
     )
     # OUTPUT_PATH is a positional arg on the CLI leaf (not -o).
-    _drive_cli(["download", "audio", out, "-n", NB], setup=setup_c)
-    assert calls_m and calls_c, f"mcp={calls_m!r} cli={calls_c!r}"
-    assert calls_m[0] == calls_c[0]
+    cli = _cli_capture(
+        ["download", "audio", out, "-n", NB], "artifacts", "download_audio", setup=setup
+    )
+    assert mcp == cli
