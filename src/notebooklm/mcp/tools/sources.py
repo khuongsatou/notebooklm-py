@@ -67,6 +67,11 @@ def _source_view(source: Any) -> dict[str, Any]:
     forcing an agent to guess what ``3``/``5``/``2`` mean. Add ``kind`` (e.g.
     ``"pdf"``/``"web_page"``) and ``status_label`` (e.g. ``"ready"``/``"error"``)
     string labels alongside the raw codes.
+
+    ``status_label`` is the lower-cased ``SourceStatus`` member name (one of
+    ``ready``/``processing``/``error``/``preparing`` — the same vocabulary the
+    ``source_list`` ``status`` filter accepts). ``status`` is always a
+    ``SourceStatus`` enum (the dataclass default + every construction path).
     """
     view = to_jsonable(source)
     view["kind"] = source.kind.value
@@ -75,21 +80,62 @@ def _source_view(source: Any) -> dict[str, Any]:
     return view
 
 
+def _add_result_payload(source: Any, base: dict[str, Any]) -> dict[str, Any]:
+    """Project a ``source_add`` result: enrich the added source + flag failure.
+
+    Replaces ``base["source"]`` (the bare ``to_jsonable`` source dict) with the
+    label-enriched :func:`_source_view` so ``source_add`` output reaches parity
+    with ``source_list`` / ``source_get_content`` (``kind`` + ``status_label``).
+
+    When the add response ALREADY reflects a failed import (``status`` == ERROR),
+    surface it synchronously with a top-level ``warning``. Most imports are
+    processed asynchronously, so a freshly-added source is usually still
+    PROCESSING/PREPARING and the failure only surfaces later — but when the
+    backend echoes ERROR at add-time we say so immediately rather than letting it
+    look like a successful add.
+    """
+    base["source"] = _source_view(source)
+    if source.is_error:
+        base["warning"] = (
+            "Import failed: the source row was created but processing errored "
+            "(status_label='error'). It persists as an incomplete row — delete it "
+            "with source_delete, or list failures via source_list(status='error')."
+        )
+    return base
+
+
 def register(mcp: Any) -> None:
     """Register the source tools on ``mcp``."""
 
     @mcp.tool(annotations=READ_ONLY)
-    async def source_list(ctx: Context, notebook: str) -> dict[str, Any]:
+    async def source_list(
+        ctx: Context,
+        notebook: str,
+        status: Literal["ready", "processing", "error", "preparing"] | None = None,
+    ) -> dict[str, Any]:
         """List a notebook's sources. Accepts a notebook name or ID.
 
         Each source carries string ``kind`` / ``status_label`` labels (not just the
         raw type/status codes) so an agent never has to guess the enums.
+
+        Pass ``status`` to return only sources whose ``status_label`` matches —
+        filter by the SAME label the listing emits. ``error`` is a failed import
+        (the "ghost row" left by a broken ``source_add``); use
+        ``source_list(status="error")`` to find them without paging the whole list,
+        then clean up with ``source_delete``. Omitting ``status`` returns every
+        source (unchanged behavior).
+
+        A ``label`` filter is not offered yet: labels are a notebook-level concept,
+        not a per-source attribute, so there is nothing to filter on here today.
         """
         client = get_client(ctx)
         with mcp_errors():
             nb_id = await resolve_notebook(client, notebook)
             sources = await client.sources.list(nb_id)
-            return {"notebook_id": nb_id, "sources": [_source_view(s) for s in sources]}
+            views = [_source_view(s) for s in sources]
+            if status is not None:
+                views = [v for v in views if v["status_label"] == status]
+            return {"notebook_id": nb_id, "sources": views}
 
     @mcp.tool(annotations=READ_ONLY)
     async def source_get_content(
@@ -322,6 +368,14 @@ def register(mcp: Any) -> None:
 
         The other named inputs are mutually exclusive — supply only the one your
         ``source_type`` requires.
+
+        The added source is echoed back under ``source`` with string ``kind`` /
+        ``status_label`` labels. Imports are processed ASYNCHRONOUSLY, so the echo
+        is usually still ``processing``/``preparing`` — a failure typically surfaces
+        only AFTER processing. Confirm the outcome with ``source_wait`` or
+        ``source_list(status="error")``. When the add response ALREADY reflects a
+        failed import, ``source_add`` flags it inline (``status_label="error"`` plus
+        a top-level ``warning``) instead of looking like a clean add.
         """
         client = get_client(ctx)
         with mcp_errors():
@@ -364,7 +418,7 @@ def register(mcp: Any) -> None:
                         mime_type=mime_type or _DEFAULT_DRIVE_MIME,  # type: ignore[arg-type]
                     ),
                 )
-                return to_jsonable(drive_result)
+                return _add_result_payload(drive_result.source, to_jsonable(drive_result))
 
             content = _select_content(source_type, url=url, text=text, path=path)
             plan = add_core.build_source_add_plan(
@@ -381,7 +435,7 @@ def register(mcp: Any) -> None:
                 client,
                 add_core.SourceAddExecutionPlan(notebook_id=nb_id, plan=plan),
             )
-            return to_jsonable(add_result)
+            return _add_result_payload(add_result.source, to_jsonable(add_result))
 
 
 def _is_http_transport() -> bool:
