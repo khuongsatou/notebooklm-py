@@ -296,6 +296,9 @@ def _resolve_artifact_id(artifacts: list[Any], artifact_id: str) -> str:
         id_of=lambda a: a["id"],
         title_of=lambda a: a.get("title"),
     ).id
+    # The full-UUID fast-path returns the caller's casing verbatim; for a prefix
+    # match ``resolved`` is already the list's canonical id. A single
+    # case-insensitive scan normalizes both and confirms membership.
     resolved_lower = resolved.lower()
     for artifact in artifacts:
         if str(artifact["id"]).lower() == resolved_lower:

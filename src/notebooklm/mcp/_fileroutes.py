@@ -218,9 +218,12 @@ def register_file_routes(mcp: FastMCP, config: FileTransferConfig) -> None:
         except ValidationError as exc:
             # A bad ``aid`` in the token — a no-match id (full UUID or prefix) or an
             # ambiguous prefix (AmbiguousIdError) — surfaces here from
-            # ``_resolve_artifact_id``. Map it to a clean 400 instead of letting it
-            # bubble up as a Starlette 500. (The 409 below stays for the latest-by-type
-            # path when no completed artifact of that type exists yet.)
+            # ``_resolve_artifact_id``. The catch also covers ``build_download_plan``'s
+            # ``DownloadPlanValidationError`` (a ValidationError subclass), which a
+            # broker-minted token won't trigger but is correctly a 400 too. Map it to a
+            # clean 400 instead of letting it bubble up as a Starlette 500. (The 409
+            # below stays for the latest-by-type path when no completed artifact of that
+            # type exists yet.)
             _cleanup(temp_dir)
             return PlainTextResponse(
                 str(exc),
