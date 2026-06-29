@@ -231,7 +231,11 @@ async def resolve_sources(
         refs: Source references (full/partial id or exact title).
 
     Returns:
-        The resolved canonical ids, in the same order as ``refs``.
+        The resolved canonical ids, in the same order as ``refs``. An empty
+        ``refs`` returns an empty list (NOT ``None``): callers that treat
+        "no refs" as "all sources" must keep their own ``if refs else None``
+        guard — forwarding ``[]`` to the backend means "zero sources", which it
+        refuses for source-requiring artifact types (#1652).
 
     Raises:
         ValidationError: A ref is empty/whitespace.
