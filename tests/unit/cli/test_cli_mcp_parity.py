@@ -308,13 +308,21 @@ def test_explicit_source_ids_parity(
 #: equivalent CLI flag(s). This guards that each kind's parameters/styles map to the SAME
 #: downstream call across adapters — not just source_ids.
 #:
-#: NOTE on scope: the MCP ``artifact_generate`` deliberately exposes only this curated
-#: subset (audio format/length, quiz/flashcards quantity/difficulty, report format). For
-#: video / cinematic-video / slide-deck / infographic / mind-map the MCP uses FIXED
-#: internal defaults (not agent-settable), so there is no explicit value that could
-#: diverge — their default-value parity is covered by ``test_omitted_source_ids_parity``.
+#: Each row is ``(test_id, cmd, artifact_type, method, mcp_opts, cli_opts)``; the explicit
+#: ``test_id`` keeps the two ``video`` rows distinct.
+#:
+#: NOTE on scope (#1654): video / slide-deck / infographic per-kind options ARE now
+#: agent-settable via MCP and are covered here. ``infographic`` deliberately uses
+#: ``style="professional"`` — a value present ONLY in the infographic style set, NOT the
+#: video one (the two sets overlap on ``auto``/``anime``/``kawaii``) — so the case fails if
+#: MCP validated/forwarded against the wrong (video) set. ``cinematic-video`` and
+#: ``data-table`` expose no per-kind options. ``mind-map`` renders via a different client
+#: path (``mind_maps.generate`` / ``generate_mind_map``, see #1653) so it is NOT in this
+#: matrix; its ``map_kind`` + ``instructions`` parity is covered in
+#: ``tests/unit/mcp/test_artifacts.py``.
 _OPTION_CASES = [
     (
+        "audio",
         "audio",
         "audio",
         "generate_audio",
@@ -324,11 +332,13 @@ _OPTION_CASES = [
     (
         "quiz",
         "quiz",
+        "quiz",
         "generate_quiz",
         {"quantity": "more", "difficulty": "hard"},
         ["--quantity", "more", "--difficulty", "hard"],
     ),
     (
+        "flashcards",
         "flashcards",
         "flashcards",
         "generate_flashcards",
@@ -338,18 +348,58 @@ _OPTION_CASES = [
     (
         "report",
         "report",
+        "report",
         "generate_report",
         {"report_format": "study-guide"},
         ["--format", "study-guide"],
+    ),
+    (
+        "video",
+        "video",
+        "video",
+        "generate_video",
+        {"video_format": "brief", "style": "classic"},
+        ["--format", "brief", "--style", "classic"],
+    ),
+    (
+        "video-custom-style",
+        "video",
+        "video",
+        "generate_video",
+        {"style": "custom", "style_prompt": "hand-drawn"},
+        ["--style", "custom", "--style-prompt", "hand-drawn"],
+    ),
+    (
+        "slide-deck",
+        "slide-deck",
+        "slide-deck",
+        "generate_slide_deck",
+        {"deck_format": "presenter", "deck_length": "short"},
+        ["--format", "presenter", "--length", "short"],
+    ),
+    (
+        "infographic",
+        "infographic",
+        "infographic",
+        "generate_infographic",
+        {"orientation": "portrait", "detail": "detailed", "style": "professional"},
+        ["--orientation", "portrait", "--detail", "detailed", "--style", "professional"],
     ),
 ]
 
 
 @pytest.mark.parametrize(
-    "cmd,artifact_type,method,mcp_opts,cli_opts", _OPTION_CASES, ids=[c[0] for c in _OPTION_CASES]
+    "test_id,cmd,artifact_type,method,mcp_opts,cli_opts",
+    _OPTION_CASES,
+    ids=[c[0] for c in _OPTION_CASES],
 )
 def test_explicit_option_parity(
-    cmd: str, artifact_type: str, method: str, mcp_opts: dict, cli_opts: list[str]
+    test_id: str,
+    cmd: str,
+    artifact_type: str,
+    method: str,
+    mcp_opts: dict,
+    cli_opts: list[str],
 ) -> None:
     """Each kind's agent-settable OPTIONS/STYLES map to the SAME downstream call.
 
