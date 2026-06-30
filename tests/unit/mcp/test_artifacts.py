@@ -1071,7 +1071,8 @@ async def test_artifact_rename_not_found_projects_tool_error(mcp_call, mock_clie
         )
     assert "NOT_FOUND" in str(excinfo.value)
     mock_client.artifacts.rename.assert_not_called()
-    _ = ArtifactNotFoundError  # the raw error type is asserted in test_resolve.py
+    # The tool layer asserts the wrapped ToolError/NOT_FOUND; the raw
+    # ArtifactNotFoundError is asserted at the resolver layer in test_resolve.py.
 
 
 # ---------------------------------------------------------------------------
@@ -1090,7 +1091,8 @@ async def test_artifact_delete_confirm_false_previews(mcp_call, mock_client) -> 
     )
     mock_client.artifacts.list = AsyncMock(return_value=[art])
     mock_client.artifacts.delete = AsyncMock()
-    mock_client.mind_maps.list_note_backed = AsyncMock(return_value=[])
+    # No list_note_backed mock: the confirm=False path returns the preview before
+    # ever reaching the delete core (which is what probes list_note_backed).
     result = await mcp_call(
         "artifact_delete",
         {"notebook": NB_ID, "artifact": "aaaaaaaa-aaaa"},
