@@ -313,10 +313,13 @@ def register(mcp: Any) -> None:
             resolved_source_ids = await resolve_sources(client, nb_id, refs) if refs else None
             # ``surface`` is a Literal, so FastMCP/Pydantic rejects an out-of-enum
             # value at the schema boundary — the map lookup can't KeyError.
+            # ``query`` is passed through as-is: the payload builder
+            # (``build_prompt_suggestions_params``) is the single normalization
+            # point — it maps None / "" / whitespace-only to a null steer.
             rows = await client.notebooks.suggest_prompts(
                 nb_id,
                 source_ids=resolved_source_ids,
                 mode=_SUGGEST_SURFACE[surface],
-                query=query or None,
+                query=query,
             )
             return {"suggestions": [{"title": s.title, "prompt": s.prompt} for s in rows]}
