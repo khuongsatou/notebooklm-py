@@ -43,23 +43,6 @@ from .._resolve import resolve_notebook, resolve_sources
 #: bloat for a typical agent, so they are dropped unless ``references="full"``.
 _LITE_REFERENCE_FIELDS = ("source_id", "citation_number", "cited_text")
 
-#: ``suggest_prompts`` surface → the ``otmP3b`` (GeneratePromptSuggestions) ``mode``
-#: int. The mode selects the product surface + format the prompts are written for.
-#: Map established by the #1726 live investigation (2026-07-01): audio formats
-#: browser-verified (each Customize-dialog format card decoded its otmP3b mode),
-#: video from real web captures, quiz/flashcards client-probed. Supersedes the
-#: earlier output-based #1612 guess. ``ask`` (4) is the web chat default.
-_SUGGEST_SURFACE: dict[str, int] = {
-    "ask": 4,
-    "audio-deep-dive": 1,
-    "audio-brief": 2,
-    "audio-critique": 5,
-    "audio-debate": 6,
-    "video-explainer": 3,
-    "video-short": 10,
-    "quiz": 8,
-    "flashcards": 9,
-}
 SuggestSurface = Literal[
     "ask",
     "audio-deep-dive",
@@ -71,6 +54,25 @@ SuggestSurface = Literal[
     "quiz",
     "flashcards",
 ]
+
+#: ``suggest_prompts`` surface → the ``otmP3b`` (GeneratePromptSuggestions) ``mode``
+#: int. The mode selects the product surface + format the prompts are written for.
+#: Map established by the #1726 live investigation (2026-07-01): audio formats
+#: browser-verified (each Customize-dialog format card decoded its otmP3b mode),
+#: video from real web captures, quiz/flashcards client-probed. Supersedes the
+#: earlier output-based #1612 guess. ``ask`` (4) is the web chat default. Keyed by
+#: ``SuggestSurface`` so mypy flags any drift between these keys and the Literal.
+_SUGGEST_SURFACE: dict[SuggestSurface, int] = {
+    "ask": 4,
+    "audio-deep-dive": 1,
+    "audio-brief": 2,
+    "audio-critique": 5,
+    "audio-debate": 6,
+    "video-explainer": 3,
+    "video-short": 10,
+    "quiz": 8,
+    "flashcards": 9,
+}
 
 
 def register(mcp: Any) -> None:
