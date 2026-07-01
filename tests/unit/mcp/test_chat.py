@@ -599,9 +599,10 @@ async def test_suggest_prompts_source_ids_and_query(mcp_call, mock_client) -> No
     kwargs = mock_client.notebooks.suggest_prompts.await_args.kwargs
     assert kwargs["source_ids"] == [_SRC_A]
     assert kwargs["query"] == "risks"
-    # Omitted source_ids => None (all); empty query => None.
+    # Omitted source_ids => None (all); explicit null query is accepted at the
+    # schema boundary (query is str | None) and reaches the client as None.
     mock_client.notebooks.suggest_prompts = AsyncMock(return_value=[])
-    await mcp_call("suggest_prompts", {"notebook": NB_ID})
+    await mcp_call("suggest_prompts", {"notebook": NB_ID, "query": None})
     kwargs = mock_client.notebooks.suggest_prompts.await_args.kwargs
     assert kwargs["source_ids"] is None and kwargs["query"] is None
 

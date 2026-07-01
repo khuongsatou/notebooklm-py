@@ -61,7 +61,8 @@ SuggestSurface = Literal[
 #: browser-verified (each Customize-dialog format card decoded its otmP3b mode),
 #: video from real web captures, quiz/flashcards client-probed. Supersedes the
 #: earlier output-based #1612 guess. ``ask`` (4) is the web chat default. Keyed by
-#: ``SuggestSurface`` so mypy flags any drift between these keys and the Literal.
+#: ``SuggestSurface`` so mypy rejects any key not in the Literal; a Literal member
+#: missing from the map is caught by the per-surface test in ``test_chat.py``.
 _SUGGEST_SURFACE: dict[SuggestSurface, int] = {
     "ask": 4,
     "audio-deep-dive": 1,
@@ -281,7 +282,7 @@ def register(mcp: Any) -> None:
         notebook: str,
         surface: SuggestSurface = "ask",
         source_ids: list[str] | str | None = None,
-        query: str = "",
+        query: str | None = None,
     ) -> dict[str, Any]:
         """Get AI-suggested, ready-to-send prompts for a studio surface. Accepts a
         notebook name or ID.

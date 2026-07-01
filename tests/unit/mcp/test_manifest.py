@@ -76,9 +76,9 @@ EXPECTED_TOOLS: frozenset[str] = frozenset(
 )
 
 #: Tool-count ceiling. The design target is ~25; the sharing domain (#1684) took
-#: the surface to 34, and the artifact get-prompt/retry tools took it to 36, and suggest_prompts to 37. The
-#: ceiling has headroom for a few more tools, but an accidental explosion still
-#: trips the gate.
+#: the surface to 34, the artifact get-prompt/retry tools took it to 36, and
+#: suggest_prompts to 37. The ceiling has headroom for a few more tools, but an
+#: accidental explosion still trips the gate.
 TOOL_CEILING = 40
 
 #: The destructive tools — each carries ``destructiveHint`` AND a ``confirm``
