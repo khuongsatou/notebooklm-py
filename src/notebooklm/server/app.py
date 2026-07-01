@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from importlib.metadata import PackageNotFoundError, version
 from typing import cast
 
 from fastapi import APIRouter, Depends, FastAPI, Request, Response
@@ -128,6 +129,16 @@ def create_app(*, client_factory: ClientFactory | None = None) -> FastAPI:
 
     # Every /v1 route requires the bearer-token + loopback-Host dependency.
     v1 = APIRouter(prefix="/v1", dependencies=[Depends(require_auth)])
+
+    @v1.get("/status")
+    async def status() -> dict[str, str | bool]:
+        """Authenticated desktop/app status probe."""
+        try:
+            package_version = version("notebooklm-py")
+        except PackageNotFoundError:
+            package_version = "0.0.0"
+        return {"ok": True, "server": SERVER_NAME, "version": package_version}
+
     v1.include_router(notebooks.router)
     v1.include_router(sources.router)
     v1.include_router(notes.router)

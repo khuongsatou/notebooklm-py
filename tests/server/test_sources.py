@@ -101,3 +101,17 @@ def test_list_and_delete(authed_client: TestClient, fake_client: FakeClient) -> 
     assert deleted.status_code == 204
     # Idempotent re-delete.
     assert authed_client.delete("/v1/notebooks/nb-1/sources/src-7").status_code == 204
+
+
+def test_source_guide_and_fulltext(authed_client: TestClient, fake_client: FakeClient) -> None:
+    fake_client.sources_store["nb-1"] = {
+        "src-8": Source(id="src-8", title="Guide Source", status=SourceStatus.READY)
+    }
+
+    guide = authed_client.get("/v1/notebooks/nb-1/sources/src-8/guide")
+    assert guide.status_code == 200
+    assert guide.json()["guide"]["keywords"] == ["guide"]
+
+    fulltext = authed_client.get("/v1/notebooks/nb-1/sources/src-8/fulltext?output_format=markdown")
+    assert fulltext.status_code == 200
+    assert fulltext.json()["fulltext"]["content"] == "markdown content"

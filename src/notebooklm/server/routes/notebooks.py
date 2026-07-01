@@ -38,6 +38,12 @@ class NotebookCreate(BaseModel):
     title: str
 
 
+class NotebookRename(BaseModel):
+    """Request body for renaming a notebook."""
+
+    title: str
+
+
 @router.get("")
 async def list_notebooks(client: ClientDep) -> dict[str, Any]:
     """List all notebooks."""
@@ -57,6 +63,29 @@ async def create_notebook(body: NotebookCreate, client: ClientDep) -> dict[str, 
     """Create a notebook with the given title."""
     result = await core.execute_notebook_create(client, body.title)
     return to_jsonable(result.notebook)
+
+
+@router.patch("/{notebook_id}")
+async def rename_notebook(
+    notebook_id: str, body: NotebookRename, client: ClientDep
+) -> dict[str, Any]:
+    """Rename a notebook and return the refreshed notebook."""
+    notebook = await client.notebooks.rename(notebook_id, body.title)
+    return to_jsonable(notebook)
+
+
+@router.get("/{notebook_id}/summary")
+async def get_summary(notebook_id: str, client: ClientDep) -> dict[str, Any]:
+    """Return a notebook's generated summary text."""
+    summary = await client.notebooks.get_summary(notebook_id)
+    return {"notebook_id": notebook_id, "summary": summary}
+
+
+@router.get("/{notebook_id}/metadata")
+async def get_metadata(notebook_id: str, client: ClientDep) -> dict[str, Any]:
+    """Return notebook metadata with source overview."""
+    metadata = await client.notebooks.get_metadata(notebook_id)
+    return to_jsonable(metadata)
 
 
 @router.delete("/{notebook_id}", status_code=204)

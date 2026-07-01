@@ -28,6 +28,29 @@ def test_conversation_id_is_forwarded(authed_client: TestClient, fake_client: Fa
     assert fake_client.last_ask == {"notebook_id": "nb-1", "conversation_id": "conv-42"}
 
 
+def test_chat_history_returns_rows(authed_client: TestClient, fake_client: FakeClient) -> None:
+    fake_client.chat_history = [("q1", "a1")]
+    resp = authed_client.get("/v1/notebooks/nb-1/chat/history?limit=5")
+    assert resp.status_code == 200
+    assert resp.json()["history"] == [{"question": "q1", "answer": "a1"}]
+    assert fake_client.last_history == {
+        "notebook_id": "nb-1",
+        "limit": 5,
+        "conversation_id": None,
+    }
+
+
+def test_chat_configure_records_options(authed_client: TestClient, fake_client: FakeClient) -> None:
+    resp = authed_client.post(
+        "/v1/notebooks/nb-1/chat/configure",
+        json={"goal": "custom", "response_length": "longer", "custom_prompt": "Be direct"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["configured"] is True
+    assert fake_client.last_chat_config is not None
+    assert fake_client.last_chat_config["custom_prompt"] == "Be direct"
+
+
 def test_rate_limited_ask_is_429(authed_client: TestClient, fake_client: FakeClient) -> None:
     fake_client.chat_error = RateLimitError("slow down")
     resp = authed_client.post("/v1/notebooks/nb-1/chat", json={"question": "hi"})

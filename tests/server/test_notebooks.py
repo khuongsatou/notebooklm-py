@@ -23,6 +23,28 @@ def test_create_returns_201_with_new_notebook(authed_client: TestClient) -> None
     assert resp.json()["title"] == "Fresh"
 
 
+def test_status_returns_authenticated_server_info(authed_client: TestClient) -> None:
+    resp = authed_client.get("/v1/status")
+    assert resp.status_code == 200
+    assert resp.json()["ok"] is True
+    assert resp.json()["server"] == "notebooklm-server"
+
+
+def test_rename_notebook(authed_client: TestClient, fake_client: FakeClient) -> None:
+    fake_client.notebooks_store["nb-2"] = Notebook(id="nb-2", title="Old")
+    resp = authed_client.patch("/v1/notebooks/nb-2", json={"title": "New"})
+    assert resp.status_code == 200
+    assert resp.json()["title"] == "New"
+
+
+def test_get_summary(authed_client: TestClient, fake_client: FakeClient) -> None:
+    fake_client.notebooks_store["nb-4"] = Notebook(id="nb-4", title="Four")
+    fake_client.notebook_summaries["nb-4"] = "Notebook summary"
+    resp = authed_client.get("/v1/notebooks/nb-4/summary")
+    assert resp.status_code == 200
+    assert resp.json()["summary"] == "Notebook summary"
+
+
 def test_get_existing_notebook(authed_client: TestClient, fake_client: FakeClient) -> None:
     fake_client.notebooks_store["nb-9"] = Notebook(id="nb-9", title="Nine")
     resp = authed_client.get("/v1/notebooks/nb-9")

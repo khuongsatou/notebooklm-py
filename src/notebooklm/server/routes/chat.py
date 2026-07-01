@@ -14,7 +14,7 @@ This module imports NO ``click`` / ``rich`` / ``cli``.
 
 from __future__ import annotations
 
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
@@ -37,6 +37,14 @@ class ChatAsk(BaseModel):
     conversation_id: str | None = None
 
 
+class ChatConfigure(BaseModel):
+    """Request body for configuring notebook chat."""
+
+    goal: Literal["default", "custom", "learning_guide"] | None = None
+    response_length: Literal["default", "shorter", "longer"] | None = None
+    custom_prompt: str | None = None
+
+
 @router.post("")
 async def ask(notebook_id: str, body: ChatAsk, client: ClientDep) -> dict[str, Any]:
     """Ask the notebook's sources a question and return the full answer.
@@ -46,3 +54,42 @@ async def ask(notebook_id: str, body: ChatAsk, client: ClientDep) -> dict[str, A
     """
     result = await client.chat.ask(notebook_id, body.question, conversation_id=body.conversation_id)
     return to_jsonable(result)
+
+
+@router.get("/history")
+async def history(
+    notebook_id: str,
+    client: ClientDep,
+    limit: int = 100,
+    conversation_id: str | None = None,
+) -> dict[str, Any]:
+    """Return chat history as question/answer rows."""
+    rows = await client.chat.get_history(notebook_id, limit=limit, conversation_id=conversation_id)
+    return {
+        "notebook_id": notebook_id,
+        "history": [{"question": question, "answer": answer} for question, answer in rows],
+    }
+
+
+@router.post("/configure")
+async def configure(notebook_id: str, body: ChatConfigure, client: ClientDep) -> dict[str, Any]:
+    """Configure chat persona/response length for a notebook."""
+    from ...rpc import ChatGoal, ChatResponseLength
+
+    goals = {
+        "default": ChatGoal.DEFAULT,
+        "custom": ChatGoal.CUSTOM,
+        "learning_guide": ChatGoal.LEARNING_GUIDE,
+    }
+    lengths = {
+        "default": ChatResponseLength.DEFAULT,
+        "shorter": ChatResponseLength.SHORTER,
+        "longer": ChatResponseLength.LONGER,
+    }
+    await client.chat.configure(
+        notebook_id,
+        goal=goals[body.goal] if body.goal else None,
+        response_length=lengths[body.response_length] if body.response_length else None,
+        custom_prompt=body.custom_prompt,
+    )
+    return {"notebook_id": notebook_id, "configured": True}

@@ -26,9 +26,9 @@ from __future__ import annotations
 import os
 import shutil
 import tempfile
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal, cast
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile
 from pydantic import BaseModel
 
 from ..._app import source_add as add_core
@@ -142,6 +142,29 @@ async def get_source(
     if source.is_ready:
         pending.drop(notebook_id, source_id)
     return to_jsonable(source)
+
+
+@router.get("/{source_id}/guide")
+async def get_guide(notebook_id: str, source_id: str, client: ClientDep) -> dict[str, Any]:
+    """Return the source guide summary and keywords."""
+    guide = await client.sources.get_guide(notebook_id, source_id)
+    return {"notebook_id": notebook_id, "source_id": source_id, "guide": to_jsonable(guide)}
+
+
+@router.get("/{source_id}/fulltext")
+async def get_fulltext(
+    notebook_id: str,
+    source_id: str,
+    client: ClientDep,
+    output_format: str = Query("text", pattern="^(text|markdown)$"),
+) -> dict[str, Any]:
+    """Return flattened source content in text or markdown format."""
+    fulltext = await client.sources.get_fulltext(
+        notebook_id,
+        source_id,
+        output_format=cast("Literal['text', 'markdown']", output_format),
+    )
+    return {"notebook_id": notebook_id, "source_id": source_id, "fulltext": to_jsonable(fulltext)}
 
 
 @router.post("/url", status_code=201)

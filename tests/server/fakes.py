@@ -20,8 +20,9 @@ from notebooklm._types.artifacts import Artifact, GenerationState, GenerationSta
 from notebooklm._types.chat import AskResult
 from notebooklm._types.notebooks import Notebook
 from notebooklm._types.notes import Note
+from notebooklm._types.research import SourceGuide
 from notebooklm._types.sharing import SharedUser, ShareStatus
-from notebooklm._types.sources import Source
+from notebooklm._types.sources import Source, SourceFulltext
 from notebooklm.exceptions import NotebookNotFoundError, NoteNotFoundError
 from notebooklm.rpc.types import ShareAccess, SharePermission, ShareViewLevel, SourceStatus
 
@@ -66,6 +67,24 @@ class FakeNotebooks:
         self._s.notebooks_store[nb.id] = nb
         return nb
 
+    async def rename(self, notebook_id: str, new_title: str) -> Notebook:
+        nb = await self.get(notebook_id)
+        renamed = Notebook(id=nb.id, title=new_title)
+        self._s.notebooks_store[notebook_id] = renamed
+        return renamed
+
+    async def get_summary(self, notebook_id: str) -> str:
+        await self.get(notebook_id)
+        return self._s.notebook_summaries.get(notebook_id, "")
+
+    async def get_metadata(self, notebook_id: str) -> dict[str, Any]:
+        nb = await self.get(notebook_id)
+        return {
+            "id": nb.id,
+            "title": nb.title,
+            "sources": list(self._s.sources_store.get(notebook_id, {}).values()),
+        }
+
     async def delete(self, notebook_id: str) -> None:
         # Idempotent-on-missing (the public delete contract).
         self._s.notebooks_store.pop(notebook_id, None)
@@ -100,6 +119,29 @@ class FakeSources:
 
     async def delete(self, notebook_id: str, source_id: str) -> None:
         self._s.sources_store.get(notebook_id, {}).pop(source_id, None)
+
+    async def get_guide(self, notebook_id: str, source_id: str) -> SourceGuide:
+        source = await self.get_or_none(notebook_id, source_id)
+        if source is None:
+            from notebooklm.exceptions import SourceNotFoundError
+
+            raise SourceNotFoundError(source_id)
+        return SourceGuide(summary=f"Guide for {source.title or source_id}", keywords=("guide",))
+
+    async def get_fulltext(
+        self, notebook_id: str, source_id: str, *, output_format: str = "text"
+    ) -> SourceFulltext:
+        source = await self.get_or_none(notebook_id, source_id)
+        if source is None:
+            from notebooklm.exceptions import SourceNotFoundError
+
+            raise SourceNotFoundError(source_id)
+        return SourceFulltext(
+            source_id=source_id,
+            title=source.title or source_id,
+            content=f"{output_format} content",
+            char_count=len(f"{output_format} content"),
+        )
 
     def _add(self, notebook_id: str, *, title: str | None, url: str | None = None) -> Source:
         bucket = self._s.sources_store.setdefault(notebook_id, {})
@@ -179,6 +221,30 @@ class FakeChat:
             turn_number=1,
             is_follow_up=conversation_id is not None,
         )
+
+    async def get_history(
+        self, notebook_id: str, limit: int = 100, conversation_id: str | None = None
+    ) -> list[tuple[str, str]]:
+        self._s.last_history = {
+            "notebook_id": notebook_id,
+            "limit": limit,
+            "conversation_id": conversation_id,
+        }
+        return self._s.chat_history[:limit]
+
+    async def configure(
+        self,
+        notebook_id: str,
+        goal: Any = None,
+        response_length: Any = None,
+        custom_prompt: str | None = None,
+    ) -> None:
+        self._s.last_chat_config = {
+            "notebook_id": notebook_id,
+            "goal": goal,
+            "response_length": response_length,
+            "custom_prompt": custom_prompt,
+        }
 
 
 class FakeArtifacts:
@@ -291,13 +357,17 @@ class FakeClient:
         self.download_bytes: bytes = b"FAKE-ARTIFACT-BYTES"
         self.download_return_path: str | None = None
         self.chat_error: Exception | None = None
+        self.chat_history: list[tuple[str, str]] = []
         self.last_share_notify: bool | None = None
+        self.notebook_summaries: dict[str, str] = {}
 
         self.next_task = 1
         self.next_source = 1
         self.next_note = 1
         self.uploaded_paths: list[str] = []
         self.last_ask: dict[str, Any] | None = None
+        self.last_history: dict[str, Any] | None = None
+        self.last_chat_config: dict[str, Any] | None = None
 
         self.notebooks = FakeNotebooks(self)
         self.sources = FakeSources(self)

@@ -1,7 +1,7 @@
 # Repository Guidelines
 
 **Status:** Active
-**Last Updated:** 2026-06-11
+**Last Updated:** 2026-07-01
 
 ## Project Structure & Module Organization
 
@@ -42,3 +42,4 @@ For Codex or other parallel agents:
 - Prefer `--json` output and pass explicit notebook IDs instead of relying on `notebooklm use`.
 - Isolate concurrent runs with `NOTEBOOKLM_PROFILE=agent-<id>` so each agent gets its own context file under `~/.notebooklm/profiles/<name>/`. Fall back to `NOTEBOOKLM_HOME=/tmp/agent-<id>` only when separate home directories are required.
 - In headless environments where Playwright login is impractical, authenticate with `notebooklm login --browser-cookies <browser>` (requires `pip install "notebooklm-py[cookies]"`).
+- Current local NotebookLM auth is already saved for profile `default` at `/Users/apple/.notebooklm/profiles/default/storage_state.json` for account `vankhuong240499@gmail.com`. On 2026-07-01, `uv run notebooklm auth check --json` reported `status: ok`; the `__Secure-1PSIDTS` cookie expires at `2027-07-01T09:42:26+00:00` (`2027-07-01 16:42:26 +07`). Agents should run `uv run notebooklm auth check --json` or `uv run notebooklm auth check --test --passive` before attempting another interactive `notebooklm login`.

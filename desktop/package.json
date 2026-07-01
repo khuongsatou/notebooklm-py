@@ -1,0 +1,33 @@
+{
+  "name": "notebooklm-pro-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "NotebookLM Pro desktop client for notebook research workflows.",
+  "main": "electron/main.cjs",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "electron": "env -u ELECTRON_RUN_AS_NODE electron .",
+    "desktop": "env -u ELECTRON_RUN_AS_NODE NOTEBOOKLM_DESKTOP_DEV_URL=http://127.0.0.1:5173 electron .",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview --host 127.0.0.1",
+    "test:ui": "playwright test",
+    "test:ui:headed": "playwright test --headed",
+    "test:ui:update": "playwright test --update-snapshots"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "^5.0.0",
+    "lucide-react": "^0.468.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "vite": "^7.0.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.61.1",
+    "@types/node": "^24.0.0",
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "electron": "^37.10.3",
+    "typescript": "^5.7.2"
+  }
+}
