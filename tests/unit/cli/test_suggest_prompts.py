@@ -144,7 +144,7 @@ def test_bad_mode_exits_one(runner, mock_auth):
     payload = json.loads(result.stdout)
     assert payload["error"] is True
     assert payload["code"] == "VALIDATION_ERROR"
-    assert "1..9" in payload["message"]
+    assert "1..10" in payload["message"]
 
 
 def test_bad_mode_validated_before_source_resolution(runner, mock_auth):
@@ -164,6 +164,6 @@ def test_bad_mode_validated_before_source_resolution(runner, mock_auth):
     assert result.exit_code == 1, result.output
     payload = json.loads(result.stdout)
     assert payload["code"] == "VALIDATION_ERROR"
-    assert "1..9" in payload["message"]
+    assert "1..10" in payload["message"]
     mock_client.sources.list.assert_not_awaited()
     mock_client.notebooks.suggest_prompts.assert_not_awaited()
