@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, shell } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, shell } = require("electron");
 const { spawn } = require("node:child_process");
 const crypto = require("node:crypto");
 const fs = require("node:fs");
@@ -24,6 +24,22 @@ function findFreePort() {
     });
     server.on("error", reject);
   });
+}
+
+function backendEnvironment(token) {
+  const env = {
+    ...process.env,
+    NOTEBOOKLM_SERVER_TOKEN: token,
+  };
+  for (const key of ["NO_PROXY", "no_proxy"]) {
+    if (!env[key]) continue;
+    env[key] = env[key]
+      .split(",")
+      .map((entry) => entry.trim())
+      .filter((entry) => entry && entry !== "::1" && entry !== "::1/128")
+      .join(",");
+  }
+  return env;
 }
 
 function sendBackendStatus(payload) {
@@ -74,13 +90,21 @@ async function startBackend() {
 
   backend = spawn(
     "uv",
-    ["run", "notebooklm-server", "--host", "127.0.0.1", "--port", String(port), "--token", token],
+    [
+      "run",
+      "--extra",
+      "server",
+      "notebooklm-server",
+      "--host",
+      "127.0.0.1",
+      "--port",
+      String(port),
+      "--token",
+      token,
+    ],
     {
       cwd: repoRoot(),
-      env: {
-        ...process.env,
-        NOTEBOOKLM_SERVER_TOKEN: token,
-      },
+      env: backendEnvironment(token),
       stdio: ["ignore", "pipe", "pipe"],
     },
   );
@@ -167,9 +191,26 @@ ipcMain.handle("backend:request", async (_event, request) => {
   console.log(`[backend request] ${request.method || "GET"} ${url.pathname}${url.search}`);
   const headers = {
     Authorization: `Bearer ${backendConfig.token}`,
-    "Content-Type": "application/json",
     ...(request.headers || {}),
   };
+  let requestBody;
+  if (request.file) {
+    const form = new FormData();
+    const bytes = Buffer.from(request.file.data);
+    const blob = new Blob([bytes], {
+      type: request.file.type || "application/octet-stream",
+    });
+    form.append("file", blob, request.file.name || "upload");
+    for (const [key, value] of Object.entries(request.form || {})) {
+      if (value !== undefined && value !== null && value !== "") {
+        form.append(key, String(value));
+      }
+    }
+    requestBody = form;
+  } else if (request.body !== undefined) {
+    headers["Content-Type"] = "application/json";
+    requestBody = JSON.stringify(request.body);
+  }
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 30_000);
   let response;
@@ -177,7 +218,7 @@ ipcMain.handle("backend:request", async (_event, request) => {
     response = await fetch(url, {
       method: request.method || "GET",
       headers,
-      body: request.body === undefined ? undefined : JSON.stringify(request.body),
+      body: requestBody,
       signal: controller.signal,
     });
   } catch (error) {
@@ -189,14 +230,46 @@ ipcMain.handle("backend:request", async (_event, request) => {
     clearTimeout(timeout);
   }
   const contentType = response.headers.get("content-type") || "";
-  const body = contentType.includes("application/json") ? await response.json() : await response.text();
   if (!response.ok) {
-    const detail = typeof body === "object" && body && body.error ? body.error.message : body;
+    const errorBody = contentType.includes("application/json")
+      ? await response.json()
+      : await response.text();
+    const detail =
+      typeof errorBody === "object" && errorBody && errorBody.error
+        ? errorBody.error.message
+        : errorBody;
     throw new Error(detail || `Request failed with ${response.status}`);
   }
+  if (request.download) {
+    const suggestedName =
+      request.suggestedName || filenameFromDisposition(response.headers.get("content-disposition"));
+    const { canceled, filePath } = await dialog.showSaveDialog(mainWindow, {
+      defaultPath: suggestedName || "notebooklm-artifact",
+    });
+    if (canceled || !filePath) {
+      return { canceled: true };
+    }
+    const bytes = Buffer.from(await response.arrayBuffer());
+    fs.writeFileSync(filePath, bytes);
+    return {
+      canceled: false,
+      path: filePath,
+      filename: path.basename(filePath),
+      bytes: bytes.length,
+    };
+  }
+  const body = contentType.includes("application/json") ? await response.json() : await response.text();
   console.log(`[backend response] ${response.status} ${request.path}`);
   return body;
 });
+
+function filenameFromDisposition(value) {
+  if (!value) return null;
+  const utf8Match = value.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utf8Match) return decodeURIComponent(utf8Match[1].replace(/"/g, ""));
+  const asciiMatch = value.match(/filename="?([^";]+)"?/i);
+  return asciiMatch ? asciiMatch[1] : null;
+}
 
 app.whenReady().then(async () => {
   console.log("[app] ready");

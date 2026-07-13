@@ -19,8 +19,9 @@ cd desktop
 npm run desktop
 ```
 
-The Electron main process starts `uv run notebooklm-server` on a random loopback
-port and injects a per-session bearer token through the preload bridge.
+The Electron main process starts `uv run --extra server notebooklm-server` on a
+random loopback port and injects a per-session bearer token through the preload
+bridge.
 
 ## Production Build
 

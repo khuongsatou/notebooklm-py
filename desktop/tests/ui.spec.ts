@@ -42,6 +42,15 @@ test.beforeEach(async ({ page }) => {
         artifacts: [...artifactsSeed],
         notes: [...notesSeed],
       };
+      Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value: {
+          writeText: async (text: string) => {
+            (window as typeof window & { __copiedText?: string }).__copiedText = text;
+          },
+        },
+      });
+      (window as typeof window & { __backendRequests?: string[] }).__backendRequests = [];
 
       window.notebooklmDesktop = {
         async getAppInfo() {
@@ -54,6 +63,9 @@ test.beforeEach(async ({ page }) => {
         async backendRequest(request) {
           const path = request.path;
           const method = request.method || "GET";
+          (window as typeof window & { __backendRequests?: string[] }).__backendRequests?.push(
+            `${method} ${path}`,
+          );
 
           if (path === "/v1/status") {
             return { ok: true, server: "notebooklm-server", version: "0.8.0" };
@@ -64,8 +76,21 @@ test.beforeEach(async ({ page }) => {
           if (path === "/v1/notebooks" && method === "POST") {
             const title = String((request.body as { title?: string })?.title || "New notebook");
             const notebook = { id: `nb-${state.notebooks.length + 1}`, title };
-            state.notebooks.unshift(notebook);
+            state.notebooks = [notebook, ...state.notebooks];
             return notebook;
+          }
+          if (/^\/v1\/notebooks\/[^/]+$/.test(path) && method === "PATCH") {
+            const id = path.split("/").pop();
+            const title = String((request.body as { title?: string })?.title || "");
+            const notebook = state.notebooks.find((item) => item.id === id);
+            if (!notebook) throw new Error("Notebook not found");
+            notebook.title = title;
+            return notebook;
+          }
+          if (/^\/v1\/notebooks\/[^/]+$/.test(path) && method === "DELETE") {
+            const id = path.split("/").pop();
+            state.notebooks = state.notebooks.filter((item) => item.id !== id);
+            return {};
           }
           if (path.includes("/summary")) {
             return {
@@ -77,15 +102,36 @@ test.beforeEach(async ({ page }) => {
           if (path.includes("/sources") && method === "GET" && !path.includes("/sources/")) {
             return { sources: state.sources };
           }
+          if (path.includes("/sources/") && method === "GET") {
+            const sourceId = path.split("/").pop();
+            const source = state.sources.find((item) => item.id === sourceId);
+            return source ? { ...source, status: 3 } : { source_id: sourceId, status: "pending" };
+          }
           if (path.includes("/sources/url") && method === "POST") {
             const source = { id: `src-${state.sources.length + 1}`, title: "New URL", status: 1 };
-            state.sources.push(source);
+            state.sources = [...state.sources, source];
             return source;
           }
           if (path.includes("/sources/text") && method === "POST") {
             const source = { id: `src-${state.sources.length + 1}`, title: "New Text", status: 1 };
-            state.sources.push(source);
+            state.sources = [...state.sources, source];
             return source;
+          }
+          if (path.includes("/sources/file") && method === "POST") {
+            const upload = request.file as { name?: string } | undefined;
+            const form = request.form as { title?: string } | undefined;
+            const source = {
+              id: `src-${state.sources.length + 1}`,
+              title: form?.title || upload?.name || "New File",
+              status: 1,
+            };
+            state.sources = [...state.sources, source];
+            return source;
+          }
+          if (path.includes("/sources/") && method === "DELETE") {
+            const sourceId = path.split("/").pop();
+            state.sources = state.sources.filter((item) => item.id !== sourceId);
+            return {};
           }
           if (path.includes("/chat") && method === "POST") {
             return {
@@ -95,8 +141,20 @@ test.beforeEach(async ({ page }) => {
               references: [],
             };
           }
+          if (path.includes("/artifacts/") && method === "GET") {
+            const taskId = path.split("/").pop() || "task-1";
+            return { task_id: taskId, status: "completed", is_complete: true };
+          }
           if (path.includes("/artifacts") && method === "GET") {
             return { artifacts: state.artifacts };
+          }
+          if (path.includes("/artifacts/download") && method === "POST") {
+            return {
+              canceled: false,
+              path: "/tmp/notebooklm-report.md",
+              filename: "notebooklm-report.md",
+              bytes: 128,
+            };
           }
           if (path.includes("/artifacts") && method === "POST") {
             return { task_id: "task-1", status: "pending", kind: "report" };
@@ -105,8 +163,13 @@ test.beforeEach(async ({ page }) => {
             return { notes: state.notes };
           }
           if (path.includes("/notes") && method === "POST") {
-            const note = { id: `note-${state.notes.length + 1}`, title: "New Note", content: "" };
-            state.notes.push(note);
+            const body = request.body as { title?: string; content?: string };
+            const note = {
+              id: `note-${state.notes.length + 1}`,
+              title: body.title || "New Note",
+              content: body.content || "",
+            };
+            state.notes = [...state.notes, note];
             return note;
           }
           if (path.includes("/share")) {
@@ -170,10 +233,8 @@ test("all workspace tabs render without layout overflow", async ({ page }) => {
     "Studio",
     "Artifacts",
     "Notes",
-    "Research",
-    "Labels",
+    "Verify",
     "Share",
-    "Settings",
   ];
 
   for (const tab of tabs) {
@@ -183,10 +244,16 @@ test("all workspace tabs render without layout overflow", async ({ page }) => {
     await expectSidebarContained(page);
     await expectNoVisibleOverlap(page);
   }
+
+  for (const tab of ["Research", "Labels", "Settings"]) {
+    const button = page.locator(".tabs").getByRole("button", { name: tab, exact: true });
+    await expect(button).toBeDisabled();
+    await expect(button).toHaveAttribute("title", "Not available in MVP");
+  }
 });
 
 test("sidebar notebook selection opens visible detail", async ({ page }) => {
-  await page.locator(".notebook-row", { hasText: "Very Long Notebook Name" }).click();
+  await page.locator(".notebook-select", { hasText: "Very Long Notebook Name" }).click();
   await expect(page.locator(".notebook-row.active", { hasText: "Very Long Notebook Name" })).toBeVisible();
   await expect(page.locator(".notebook-detail", { hasText: "Very Long Notebook Name" })).toBeVisible();
   await expect(page.locator(".tabs").getByRole("button", { name: "Overview", exact: true })).toHaveClass(/active/);
@@ -194,26 +261,122 @@ test("sidebar notebook selection opens visible detail", async ({ page }) => {
   await expectNoHorizontalOverflow(page);
 });
 
+test("notebook search and create rename delete dialogs work without native prompts", async ({ page }) => {
+  const search = page.getByPlaceholder("Search notebook");
+  await search.fill("Backend Mapping");
+  await expect(page.locator(".notebook-row")).toHaveCount(1);
+  await expect(page.getByText("1/3", { exact: true })).toBeVisible();
+  await search.clear();
+
+  await page.getByTitle("Create notebook").click();
+  const createDialog = page.getByRole("dialog", { name: "Create notebook" });
+  await expect(createDialog).toBeVisible();
+  await createDialog.getByPlaceholder("Notebook title").fill("MVP QA Notebook");
+  await createDialog.getByRole("button", { name: "Create" }).click();
+  await expect(page.locator(".notebook-row.active", { hasText: "MVP QA Notebook" })).toBeVisible();
+
+  await page.getByTitle("Rename notebook").click();
+  const renameDialog = page.getByRole("dialog", { name: "Rename notebook" });
+  await renameDialog.getByPlaceholder("Notebook title").fill("MVP QA Renamed");
+  await renameDialog.getByRole("button", { name: "Rename" }).click();
+  await expect(page.locator(".notebook-row.active", { hasText: "MVP QA Renamed" })).toBeVisible();
+
+  await page.getByTitle("Delete notebook MVP QA Renamed").click();
+  const deleteDialog = page.getByRole("dialog", { name: "Delete notebook" });
+  await expect(deleteDialog.getByText("MVP QA Renamed", { exact: true })).toBeVisible();
+  await deleteDialog.getByRole("button", { name: "Delete", exact: true }).click();
+  await expect(page.getByText("MVP QA Renamed", { exact: true })).toHaveCount(0);
+  await expect(page.locator(".notebook-row.active")).toHaveCount(1);
+});
+
+test("remaining MVP buttons produce visible state changes or backend calls", async ({ page }) => {
+  await page.getByTitle("Load summary").click();
+  await expect(page.getByText("A compact workspace for sources")).toBeVisible();
+
+  const notebookListCallsBefore = await backendRequestCount(page, "GET /v1/notebooks");
+  await page.getByTitle("Refresh notebooks").click();
+  await expect.poll(() => backendRequestCount(page, "GET /v1/notebooks"))
+    .toBeGreaterThan(notebookListCallsBefore);
+
+  const sourceListCallsBefore = await backendRequestCount(page, "/sources");
+  await page.getByTitle("Refresh notebook detail").click();
+  await expect.poll(() => backendRequestCount(page, "/sources"))
+    .toBeGreaterThan(sourceListCallsBefore);
+
+  await clickTab(page, "Sources");
+  await page.getByRole("button", { name: "Text", exact: true }).click();
+  await page.locator(".form-panel input").fill("Disposable source");
+  await page.locator(".form-panel textarea").fill("Temporary source body");
+  await page.getByRole("button", { name: "Add", exact: true }).click();
+  await expect(page.locator(".data-row", { hasText: "New Text" })).toBeVisible();
+  await page.getByTitle("Delete New Text").click();
+  await expect(page.locator(".data-row", { hasText: "New Text" })).toHaveCount(0);
+
+  await clickTab(page, "Verify");
+  await page.getByPlaceholder("What should be verified again?").fill("Check this claim later");
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(page.getByText("Check this claim later", { exact: true })).toBeVisible();
+  await page.getByTitle("Delete verification").click();
+  await expect(page.getByText("Check this claim later", { exact: true })).toHaveCount(0);
+
+  await page.getByRole("button", { name: /Version/ }).click();
+  await page.getByTitle("Close update dialog").click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+});
+
 test("source, chat, studio, notes, and share flows keep panels stable", async ({ page }) => {
   await clickTab(page, "Sources");
   await page.getByPlaceholder("https://...").fill("https://example.com/new");
   await page.getByRole("button", { name: "Add" }).click();
   await expect(page.getByText("New URL")).toBeVisible();
+  await page.getByRole("button", { name: "File" }).click();
+  await page.locator('input[type="file"]').setInputFiles({
+    name: "brief.txt",
+    mimeType: "text/plain",
+    buffer: Buffer.from("NotebookLM upload smoke"),
+  });
+  await page.getByRole("button", { name: "Add" }).click();
+  await expect(page.getByText("brief.txt")).toBeVisible();
 
   await clickTab(page, "Chat");
   await page.getByPlaceholder("Ask this notebook...").fill("Summarize the source map");
   await page.getByRole("button", { name: "Ask" }).click();
   await expect(page.getByText("grounded answer")).toBeVisible();
+  await page.getByTitle("Copy").click();
+  await expect(page.getByText("Copied", { exact: true })).toBeVisible();
+  await expect.poll(() =>
+    page.evaluate(() => (window as typeof window & { __copiedText?: string }).__copiedText),
+  ).toContain("grounded answer");
+  await page.getByTitle("Save to Verify").click();
+  await expect(page.getByText("Saved to Verify")).toBeVisible();
+
+  await clickTab(page, "Verify");
+  await expect(page.getByText("Summarize the source map", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Verify again" }).click();
+  await expect(page.getByText("2 checks / needs review")).toBeVisible();
+  await page.getByTitle("Mark as verified").click();
+  await expect(page.getByText("2 checks / verified")).toBeVisible();
+
+  await page.reload();
+  await clickTab(page, "Verify");
+  await expect(page.getByText("Summarize the source map", { exact: true })).toBeVisible();
+  await expect(page.getByText("2 checks / verified")).toBeVisible();
 
   await clickTab(page, "Studio");
   await page.locator("select").first().selectOption("quiz");
   await page.getByRole("button", { name: "Generate" }).click();
+  await expect(page.getByText("quiz generation")).toBeVisible();
+
+  await clickTab(page, "Artifacts");
+  await page.locator("select").first().selectOption("report");
+  await page.getByRole("button", { name: "Download" }).click();
+  await expect(page.getByText("Saved notebooklm-report.md")).toBeVisible();
 
   await clickTab(page, "Notes");
   await page.locator("input").last().fill("Playwright note");
   await page.locator("textarea").fill("UI QA note body");
   await page.getByRole("button", { name: "Save" }).click();
-  await expect(page.locator(".data-row", { hasText: "New Note" })).toBeVisible();
+  await expect(page.locator(".data-row", { hasText: "Playwright note" })).toBeVisible();
 
   await clickTab(page, "Share");
   await page.locator(".panel-title .icon-btn").click();
@@ -242,6 +405,14 @@ async function expectNoHorizontalOverflow(page: Page) {
 
 async function clickTab(page: Page, name: string) {
   await page.locator(".tabs").getByRole("button", { name, exact: true }).click();
+}
+
+async function backendRequestCount(page: Page, pattern: string) {
+  return page.evaluate((value) => {
+    const requests =
+      (window as typeof window & { __backendRequests?: string[] }).__backendRequests || [];
+    return requests.filter((request) => request.includes(value)).length;
+  }, pattern);
 }
 
 async function expectStableClickableControls(page: Page) {

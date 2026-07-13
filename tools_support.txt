@@ -1,0 +1,96 @@
+
+1. Phân tich link, transcript, trích xuất keyframe, nơi lưu workspace
+/Users/apple/Desktop/extension/mtips5s_linked_pro
+
+2. Tìm stock và tài nguyên
+/Users/apple/Desktop/ex_project/mtips5s_stock
+
+3. Chuyển đổi voice miễn phí
+/Users/apple/Desktop/ex_project_2/mtips5s_zk_onnx
+/Users/apple/Desktop/ex_project_3/mtips5s_capcut_api
+
+4. Chuyển đổi voice chất lượng khi mà đã chốt ổn hết
+/Users/apple/Desktop/project/mtips5s_11labs_pro
+
+
+5. Phân tích asset từ keyframe
+/Users/apple/Desktop/project_3/mtips5s_assets
+
+6. Phân tích character ,location,visual asset -> keyframe, shotlist
+/Users/apple/Desktop/extension/mtips5s_flowkit_pro
+
+7. Preview visual keyframe và shotlist
+/Users/apple/Desktop/project/mtips5s_flowboard
+
+8. Phân tích ảnh, quy tắt quy trình tạo ảnh đồng nhất chuẩn
+/Users/apple/Desktop/project_2/mtips5s_xiaohei_image
+
+9. Tạo ảnh, tạo video miễn phí grok
+/Users/apple/Desktop/project_2/mtips5s_grok_pro
+/Users/apple/Desktop/project_2/mtips5s_kling_pro
+/Users/apple/Desktop/project_2/mtips5s_higg
+/Users/apple/Desktop/project/mtips5s_banana
+/Users/apple/Desktop/project/mtips5s_veo3
+/Users/apple/Desktop/project/mtips5s_wf_ex
+/Users/apple/Desktop/project/mtips5s_whisk_pro
+
+10. Tạo prompt nhạc nền suno
+/Users/apple/Desktop/extension/mtips5s_suno
+
+11. VFX / Sound Effects
+/Users/apple/Desktop/project_4/mtips5s_sound_effect
+/Users/apple/Desktop/project_4/mtips5s_vfx
+
+
+
+12. Bộ quy tắt trước khi generate ra prompt video; quan trọng
+/Users/apple/Desktop/extension/mtips5s_skill_veo3
+
+13. Edit và tạo draft chốt final
+/Users/apple/Desktop/project/mtips5s_cut_pro
+/Users/apple/Desktop/ex_project/mtips5s_hyper
+
+14. Tạo thumb và typography
+/Users/apple/Desktop/project_3/mtips5s_drive_down
+
+15. Convert artifact markdown sang HTML preview tự động
+/Users/apple/Desktop/extension/mtips5s_workspace/scripts/md-to-html.mjs
+
+16. Phân tích marketing
+/Users/apple/Desktop/project_3/mtips5s_drive_down
+Command chính: /fk-marketing-analysis
+Command hỗ trợ: /fk-funnel-analysis, /fk-landing-page-audit, /fk-business-model-analysis, /fk-youtube-marketing-questions
+Output chuẩn: tóm tắt marketing, ICP, pain/desire/barrier/trigger, hook/big idea/promise/proof/CTA, AIDA, Customer Profile Canvas, funnel, điểm số marketing và câu hỏi/bài tập audit.
+
+17. Tools Trafic
+https://www.similarweb.com/
+https://www.semrush.com/
+
+18. NotebookML validate research
+/Users/apple/Desktop/ex_project_10/mtips5s_note_lm_pro
+
+19. OBS hỗ trợ ghi màn hình cho các chủ đề tutorial
+/Users/apple/Desktop/ex_project_14/mtips5s_obs
+
+20. Tạo thumb tools đỉnh
+/Users/apple/Desktop/project_8/mtips5s_thumbs
+
+21. Tải đa nền tảng cả file ẩn trên drive
+/Users/apple/Desktop/ex_project_14/mtips5s_vidtools
+
+
+22. Xóa mụn và làm đẹp nhân vật chính
+/Users/apple/Desktop/ex_project_14/mtips5s_photoshop_lite
+
+
+23. tools screen studio edit cho video tutorial
+/Users/apple/Desktop/ex_project_14/mtips5s_screen_studio
+
+24. Tools voice voice chất lượng cao
+/Users/apple/Desktop/ex_project_11/mtips5s_kokoro_vi
+
+25. Tools Photoshop để vẽ spine thử công
+/Users/apple/Desktop/ex_project_14/mtips5s_photoshop
+
+26. Gemini nghiên cứu sâu
+/Users/apple/Desktop/ex_project_9/mtips5s_gemini

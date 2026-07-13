@@ -1,6 +1,26 @@
-import type { Artifact, ChatAnswer, Note, Notebook, Source } from "./types";
+import type {
+  Artifact,
+  ArtifactGeneration,
+  ArtifactPollResult,
+  ChatAnswer,
+  DownloadResult,
+  Note,
+  Notebook,
+  Source,
+  SourcePollResult,
+} from "./types";
 
-async function request<T>(path: string, options: { method?: string; body?: unknown } = {}) {
+async function request<T>(
+  path: string,
+  options: {
+    method?: string;
+    body?: unknown;
+    form?: Record<string, string | null | undefined>;
+    file?: { name: string; type?: string; data: ArrayBuffer };
+    download?: boolean;
+    suggestedName?: string;
+  } = {},
+) {
   if (!window.notebooklmDesktop) {
     throw new Error("Open this renderer through Electron to connect the local backend");
   }
@@ -8,6 +28,10 @@ async function request<T>(path: string, options: { method?: string; body?: unkno
     path,
     method: options.method,
     body: options.body,
+    form: options.form,
+    file: options.file,
+    download: options.download,
+    suggestedName: options.suggestedName,
   });
 }
 
@@ -46,10 +70,22 @@ export const api = {
       method: "POST",
       body: { title, text },
     }),
+  addFileSource: async (notebookId: string, file: File, title?: string) => {
+    const data = await file.arrayBuffer();
+    return request<Source>(`/v1/notebooks/${encodeURIComponent(notebookId)}/sources/file`, {
+      method: "POST",
+      form: { title: title?.trim() || undefined },
+      file: { name: file.name, type: file.type, data },
+    });
+  },
   deleteSource: (notebookId: string, sourceId: string) =>
     request<void>(
       `/v1/notebooks/${encodeURIComponent(notebookId)}/sources/${encodeURIComponent(sourceId)}`,
       { method: "DELETE" },
+    ),
+  pollSource: (notebookId: string, sourceId: string) =>
+    request<SourcePollResult>(
+      `/v1/notebooks/${encodeURIComponent(notebookId)}/sources/${encodeURIComponent(sourceId)}`,
     ),
   ask: (notebookId: string, question: string, conversationId?: string) =>
     request<ChatAnswer>(`/v1/notebooks/${encodeURIComponent(notebookId)}/chat`, {
@@ -67,9 +103,20 @@ export const api = {
     return result.artifacts;
   },
   generateArtifact: (notebookId: string, body: Record<string, unknown>) =>
-    request<Record<string, unknown>>(`/v1/notebooks/${encodeURIComponent(notebookId)}/artifacts`, {
+    request<ArtifactGeneration>(`/v1/notebooks/${encodeURIComponent(notebookId)}/artifacts`, {
       method: "POST",
       body,
+    }),
+  pollArtifact: (notebookId: string, taskId: string) =>
+    request<ArtifactPollResult>(
+      `/v1/notebooks/${encodeURIComponent(notebookId)}/artifacts/${encodeURIComponent(taskId)}`,
+    ),
+  downloadArtifact: (notebookId: string, type: string, outputFormat?: string) =>
+    request<DownloadResult>(`/v1/notebooks/${encodeURIComponent(notebookId)}/artifacts/download`, {
+      method: "POST",
+      body: { type, output_format: outputFormat || null },
+      download: true,
+      suggestedName: artifactFilename(type, outputFormat),
     }),
   listNotes: async (notebookId: string) => {
     const result = await request<{ notes: Note[] }>(
@@ -85,3 +132,18 @@ export const api = {
   getShare: (notebookId: string) =>
     request<Record<string, unknown>>(`/v1/notebooks/${encodeURIComponent(notebookId)}/share`),
 };
+
+function artifactFilename(type: string, outputFormat?: string) {
+  const extensionByType: Record<string, string> = {
+    audio: "mp3",
+    video: "mp4",
+    report: "md",
+    quiz: outputFormat || "json",
+    flashcards: outputFormat || "json",
+    infographic: "png",
+    "slide-deck": outputFormat || "pdf",
+    "data-table": "csv",
+    "mind-map": "json",
+  };
+  return `notebooklm-${type}.${extensionByType[type] || "artifact"}`;
+}

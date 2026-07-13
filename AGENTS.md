@@ -39,7 +39,10 @@ Follow the existing commit style: `feat(cli): ...`, `fix(cli): ...`, `refactor(t
 
 For Codex or other parallel agents:
 
+- Before starting any new project or major task, inspect the most recently finalized project that is relevant to the work. Reuse its validated direction, decisions, conventions, and lessons learned as a reference, and explicitly note any intentional deviations before implementation.
 - Prefer `--json` output and pass explicit notebook IDs instead of relying on `notebooklm use`.
+- For Gemini Gem/chatbot creation, verification, or workflow runs, do not use the generic Gemini CLI directly. Use the local tool repo `/Users/apple/Desktop/ex_project_9/mtips5s_gemini` through its backend/API/tools (`/api/session/init`, `/api/gems`, `/api/chat/generate`, or the extension workflow) and save the resulting Gem URL, config, and verification artifacts back into the workflow.
+- After any script rewrite, final-script generation, targeted wording polish, or voice transcript promotion, automatically run the workflow's AI Smell / Sensitivity Scan before reporting the result as final. Save the scan report and block final delivery if blockers are found.
 - Isolate concurrent runs with `NOTEBOOKLM_PROFILE=agent-<id>` so each agent gets its own context file under `~/.notebooklm/profiles/<name>/`. Fall back to `NOTEBOOKLM_HOME=/tmp/agent-<id>` only when separate home directories are required.
 - In headless environments where Playwright login is impractical, authenticate with `notebooklm login --browser-cookies <browser>` (requires `pip install "notebooklm-py[cookies]"`).
 - Current local NotebookLM auth is already saved for profile `default` at `/Users/apple/.notebooklm/profiles/default/storage_state.json` for account `vankhuong240499@gmail.com`. On 2026-07-01, `uv run notebooklm auth check --json` reported `status: ok`; the `__Secure-1PSIDTS` cookie expires at `2027-07-01T09:42:26+00:00` (`2027-07-01 16:42:26 +07`). Agents should run `uv run notebooklm auth check --json` or `uv run notebooklm auth check --test --passive` before attempting another interactive `notebooklm login`.

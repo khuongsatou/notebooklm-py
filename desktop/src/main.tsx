@@ -21,30 +21,64 @@ import {
   RefreshCw,
   Search,
   Settings,
+  ShieldCheck,
   Share2,
   Sparkles,
   Tags,
   Trash2,
   Wand2,
+  X,
 } from "lucide-react";
 
 import { api } from "./api";
-import type { AppInfo, Artifact, BackendStatus, ChatAnswer, Note, Notebook, Source } from "./types";
+import type {
+  AppInfo,
+  Artifact,
+  BackendStatus,
+  ChatAnswer,
+  Job,
+  Note,
+  Notebook,
+  Source,
+  VerificationRecord,
+} from "./types";
 import "./styles.css";
 
-type View = "overview" | "sources" | "chat" | "studio" | "artifacts" | "notes" | "research" | "labels" | "share" | "settings";
+type View =
+  | "overview"
+  | "sources"
+  | "chat"
+  | "studio"
+  | "artifacts"
+  | "notes"
+  | "verify"
+  | "research"
+  | "labels"
+  | "share"
+  | "settings";
 
-const views: Array<{ id: View; label: string; icon: React.ElementType }> = [
+type NotebookDialogState = {
+  mode: "create" | "rename";
+  title: string;
+};
+
+const views: Array<{
+  id: View;
+  label: string;
+  icon: React.ElementType;
+  available?: boolean;
+}> = [
   { id: "overview", label: "Overview", icon: Activity },
   { id: "sources", label: "Sources", icon: FilePlus2 },
   { id: "chat", label: "Chat", icon: MessageSquareText },
   { id: "studio", label: "Studio", icon: Wand2 },
   { id: "artifacts", label: "Artifacts", icon: Layers3 },
   { id: "notes", label: "Notes", icon: FileText },
-  { id: "research", label: "Research", icon: FlaskConical },
-  { id: "labels", label: "Labels", icon: Tags },
+  { id: "verify", label: "Verify", icon: ShieldCheck },
+  { id: "research", label: "Research", icon: FlaskConical, available: false },
+  { id: "labels", label: "Labels", icon: Tags, available: false },
   { id: "share", label: "Share", icon: Share2 },
-  { id: "settings", label: "Settings", icon: Settings },
+  { id: "settings", label: "Settings", icon: Settings, available: false },
 ];
 
 const artifactTypes = [
@@ -60,6 +94,20 @@ const artifactTypes = [
   "mind-map",
 ];
 
+const downloadTypes = [
+  "audio",
+  "video",
+  "report",
+  "quiz",
+  "flashcards",
+  "infographic",
+  "slide-deck",
+  "data-table",
+  "mind-map",
+];
+
+const verificationStorageKey = "notebooklm-pro.verifications.v1";
+
 function App() {
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null);
   const [backend, setBackend] = useState<BackendStatus>({ status: "starting" });
@@ -68,16 +116,27 @@ function App() {
   const [sources, setSources] = useState<Source[]>([]);
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
   const [notes, setNotes] = useState<Note[]>([]);
+  const [jobs, setJobs] = useState<Job[]>([]);
+  const [verifications, setVerifications] = useState<VerificationRecord[]>(loadVerifications);
   const [answer, setAnswer] = useState<ChatAnswer | null>(null);
   const [view, setView] = useState<View>("overview");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [versionOpen, setVersionOpen] = useState(false);
+  const [notebookSearch, setNotebookSearch] = useState("");
+  const [notebookDialog, setNotebookDialog] = useState<NotebookDialogState | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<Notebook | null>(null);
 
   const activeNotebook = useMemo(
     () => notebooks.find((notebook) => notebook.id === activeNotebookId) || null,
     [notebooks, activeNotebookId],
   );
+  const filteredNotebooks = useMemo(() => {
+    const query = notebookSearch.trim().toLocaleLowerCase();
+    if (!query) return notebooks;
+    return notebooks.filter((notebook) => notebook.title.toLocaleLowerCase().includes(query));
+  }, [notebooks, notebookSearch]);
+  const ready = backend.status === "ready";
 
   useEffect(() => {
     if (!window.notebooklmDesktop) {
@@ -126,6 +185,20 @@ function App() {
     }
   }, [activeNotebookId]);
 
+  useEffect(() => {
+    window.localStorage.setItem(verificationStorageKey, JSON.stringify(verifications));
+  }, [verifications]);
+
+  useEffect(() => {
+    if (!ready || !jobs.some((job) => isActiveJob(job))) return undefined;
+    const poll = window.setInterval(() => {
+      for (const job of jobs.filter(isActiveJob)) {
+        pollJob(job);
+      }
+    }, 2500);
+    return () => window.clearInterval(poll);
+  }, [ready, jobs]);
+
   async function run(action: () => Promise<void>) {
     setBusy(true);
     setError("");
@@ -161,13 +234,87 @@ function App() {
     });
   }
 
-  async function createNotebook() {
-    const title = window.prompt("Notebook title", "New research notebook");
+  function upsertJob(job: Job) {
+    setJobs((items) => [job, ...items.filter((item) => item.id !== job.id)]);
+  }
+
+  function patchJob(id: string, patch: Partial<Job>) {
+    setJobs((items) =>
+      items.map((job) => (job.id === id ? { ...job, ...patch, updatedAt: Date.now() } : job)),
+    );
+  }
+
+  function addVerification(question: string, savedAnswer?: string) {
+    const cleanQuestion = question.trim();
+    if (!activeNotebookId || !cleanQuestion) return;
+    const now = Date.now();
+    setVerifications((items) => [
+      {
+        id: makeVerificationId(),
+        notebookId: activeNotebookId,
+        question: cleanQuestion,
+        attempts: savedAnswer?.trim() ? [{ answer: savedAnswer.trim(), checkedAt: now }] : [],
+        createdAt: now,
+        verified: false,
+      },
+      ...items,
+    ]);
+  }
+
+  function patchVerification(id: string, patch: Partial<VerificationRecord>) {
+    setVerifications((items) =>
+      items.map((record) => (record.id === id ? { ...record, ...patch } : record)),
+    );
+  }
+
+  function deleteVerification(id: string) {
+    setVerifications((items) => items.filter((record) => record.id !== id));
+  }
+
+  async function pollJob(job: Job) {
+    try {
+      if (job.kind === "source") {
+        const result = await api.pollSource(job.notebookId, job.id);
+        if (isSourceReady(result.status)) {
+          patchJob(job.id, { status: "completed", message: "ready" });
+          await refreshWorkspace(job.notebookId);
+        } else {
+          patchJob(job.id, { status: "in_progress", message: `status ${result.status ?? "pending"}` });
+        }
+        return;
+      }
+      const result = await api.pollArtifact(job.notebookId, job.id);
+      if (isArtifactComplete(result.status, result.is_complete)) {
+        patchJob(job.id, { status: "completed", message: result.status });
+        await refreshWorkspace(job.notebookId);
+      } else if (isArtifactFailed(result.status)) {
+        patchJob(job.id, { status: "failed", message: result.error || result.status });
+      } else {
+        patchJob(job.id, { status: "in_progress", message: result.status });
+      }
+    } catch (err) {
+      patchJob(job.id, {
+        status: "failed",
+        message: err instanceof Error ? err.message : "Poll failed",
+      });
+    }
+  }
+
+  async function submitNotebookDialog() {
+    if (!notebookDialog) return;
+    const title = notebookDialog.title.trim();
     if (!title) return;
     await run(async () => {
-      const created = await api.createNotebook(title);
-      setNotebooks((items) => [created, ...items]);
-      setActiveNotebookId(created.id);
+      if (notebookDialog.mode === "create") {
+        const created = await api.createNotebook(title);
+        setNotebooks((items) => [created, ...items]);
+        setActiveNotebookId(created.id);
+        setView("overview");
+      } else if (activeNotebook) {
+        const renamed = await api.renameNotebook(activeNotebook.id, title);
+        setNotebooks((items) => items.map((item) => (item.id === renamed.id ? renamed : item)));
+      }
+      setNotebookDialog(null);
     });
   }
 
@@ -177,26 +324,24 @@ function App() {
     setAnswer(null);
   }
 
-  async function renameNotebook() {
+  function openRenameNotebook() {
     if (!activeNotebook) return;
-    const title = window.prompt("Notebook title", activeNotebook.title);
-    if (!title || title === activeNotebook.title) return;
-    await run(async () => {
-      const renamed = await api.renameNotebook(activeNotebook.id, title);
-      setNotebooks((items) => items.map((item) => (item.id === renamed.id ? renamed : item)));
-    });
+    setNotebookDialog({ mode: "rename", title: activeNotebook.title });
   }
 
-  async function deleteNotebook(id: string) {
-    if (!window.confirm("Delete this notebook?")) return;
+  async function confirmDeleteNotebook() {
+    if (!deleteTarget) return;
+    const id = deleteTarget.id;
     await run(async () => {
       await api.deleteNotebook(id);
       setNotebooks((items) => items.filter((item) => item.id !== id));
-      if (activeNotebookId === id) setActiveNotebookId("");
+      if (activeNotebookId === id) {
+        const nextNotebook = notebooks.find((item) => item.id !== id);
+        setActiveNotebookId(nextNotebook?.id || "");
+      }
+      setDeleteTarget(null);
     });
   }
-
-  const ready = backend.status === "ready";
 
   return (
     <main className="app-shell">
@@ -209,23 +354,27 @@ function App() {
           </div>
         </div>
         <div className="status-dock">
-          <button className="metric" title="Notebooks">
+          <span className="metric" title="Notebooks">
             <BookOpen size={16} />
             <strong>{notebooks.length}</strong>
-          </button>
-          <button className="metric" title="Sources">
+          </span>
+          <span className="metric" title="Sources">
             <Database size={16} />
             <strong>{sources.length}</strong>
-          </button>
-          <button className="metric" title="Artifacts">
+          </span>
+          <span className="metric" title="Artifacts">
             <Sparkles size={16} />
             <strong>{artifacts.length}</strong>
-          </button>
+          </span>
+          <span className="metric" title="Active tasks">
+            <Loader2 size={16} className={jobs.some(isActiveJob) ? "spin" : ""} />
+            <strong>{jobs.filter(isActiveJob).length}</strong>
+          </span>
           <span className={`status-pill ${ready ? "ok" : backend.status === "error" ? "bad" : ""}`}>
             {ready ? <CheckCircle2 size={14} /> : <Loader2 size={14} className="spin" />}
             {backend.status}
           </span>
-          <button className="icon-btn" onClick={refreshNotebooks} title="Refresh">
+          <button className="icon-btn" onClick={refreshNotebooks} title="Refresh notebooks">
             <RefreshCw size={17} />
           </button>
         </div>
@@ -236,36 +385,47 @@ function App() {
           <div className="side-tools">
             <label className="search">
               <Search size={15} />
-              <input placeholder="Search notebook" />
+              <input
+                value={notebookSearch}
+                onChange={(event) => setNotebookSearch(event.target.value)}
+                placeholder="Search notebook"
+              />
             </label>
-            <button className="icon-btn primary" onClick={createNotebook} title="Create notebook">
+            <button
+              className="icon-btn primary"
+              onClick={() => setNotebookDialog({ mode: "create", title: "New research notebook" })}
+              title="Create notebook"
+            >
               <Plus size={18} />
             </button>
           </div>
           <div className="sidebar-label">
             <span>Notebooks</span>
-            <strong>{notebooks.length}</strong>
+            <strong>{notebookSearch.trim() ? `${filteredNotebooks.length}/${notebooks.length}` : notebooks.length}</strong>
           </div>
           <div className="notebook-list">
-            {notebooks.map((notebook) => (
-              <button
+            {filteredNotebooks.length ? filteredNotebooks.map((notebook) => (
+              <div
                 key={notebook.id}
-                title={notebook.title}
                 className={`notebook-row ${notebook.id === activeNotebookId ? "active" : ""}`}
-                onClick={() => selectNotebook(notebook.id)}
               >
-                <BookOpen size={16} />
-                <span className="notebook-title">{notebook.title}</span>
-                <Trash2
-                  size={15}
-                  className="row-action"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    deleteNotebook(notebook.id);
-                  }}
-                />
-              </button>
-            ))}
+                <button
+                  className="notebook-select"
+                  title={notebook.title}
+                  onClick={() => selectNotebook(notebook.id)}
+                >
+                  <BookOpen size={16} />
+                  <span className="notebook-title">{notebook.title}</span>
+                </button>
+                <button
+                  className="notebook-delete"
+                  title={`Delete notebook ${notebook.title}`}
+                  onClick={() => setDeleteTarget(notebook)}
+                >
+                  <Trash2 size={15} />
+                </button>
+              </div>
+            )) : <div className="empty-row">No matching notebooks</div>}
           </div>
         </aside>
 
@@ -281,7 +441,7 @@ function App() {
                 notes={notes}
                 busy={busy}
                 onRefresh={() => refreshWorkspace(activeNotebook.id)}
-                onRename={renameNotebook}
+                onRename={openRenameNotebook}
               />
               <nav className="tabs">
                 {views.map((item) => {
@@ -290,6 +450,8 @@ function App() {
                     <button
                       key={item.id}
                       className={view === item.id ? "active" : ""}
+                      disabled={item.available === false}
+                      title={item.available === false ? "Not available in MVP" : undefined}
                       onClick={() => setView(item.id)}
                     >
                       <Icon size={16} />
@@ -304,9 +466,17 @@ function App() {
                 sources={sources}
                 artifacts={artifacts}
                 notes={notes}
+                jobs={jobs.filter((job) => job.notebookId === activeNotebook.id)}
+                verifications={verifications.filter(
+                  (record) => record.notebookId === activeNotebook.id,
+                )}
                 answer={answer}
                 busy={busy}
                 setAnswer={setAnswer}
+                upsertJob={upsertJob}
+                addVerification={addVerification}
+                patchVerification={patchVerification}
+                deleteVerification={deleteVerification}
                 refresh={() => refreshWorkspace(activeNotebook.id)}
                 run={run}
               />
@@ -319,6 +489,23 @@ function App() {
         Version {appInfo?.version || "0.1.0"}
       </button>
       {versionOpen ? <VersionModal appInfo={appInfo} onClose={() => setVersionOpen(false)} /> : null}
+      {notebookDialog ? (
+        <NotebookEditorModal
+          dialog={notebookDialog}
+          busy={busy}
+          onChange={(title) => setNotebookDialog((current) => current ? { ...current, title } : null)}
+          onClose={() => setNotebookDialog(null)}
+          onSubmit={submitNotebookDialog}
+        />
+      ) : null}
+      {deleteTarget ? (
+        <ConfirmDeleteModal
+          notebook={deleteTarget}
+          busy={busy}
+          onClose={() => setDeleteTarget(null)}
+          onConfirm={confirmDeleteNotebook}
+        />
+      ) : null}
     </main>
   );
 }
@@ -338,7 +525,7 @@ function NotebookDetailBar({
   notes: Note[];
   busy: boolean;
   onRefresh: () => Promise<void>;
-  onRename: () => Promise<void>;
+  onRename: () => void;
 }) {
   return (
     <section className="notebook-detail">
@@ -380,9 +567,15 @@ function ViewPanel(props: {
   sources: Source[];
   artifacts: Artifact[];
   notes: Note[];
+  jobs: Job[];
+  verifications: VerificationRecord[];
   answer: ChatAnswer | null;
   busy: boolean;
   setAnswer: (answer: ChatAnswer | null) => void;
+  upsertJob: (job: Job) => void;
+  addVerification: (question: string, answer?: string) => void;
+  patchVerification: (id: string, patch: Partial<VerificationRecord>) => void;
+  deleteVerification: (id: string) => void;
   refresh: () => Promise<void>;
   run: (action: () => Promise<void>) => Promise<void>;
 }) {
@@ -397,6 +590,8 @@ function ViewPanel(props: {
       return <ArtifactsPanel {...props} />;
     case "notes":
       return <NotesPanel {...props} />;
+    case "verify":
+      return <VerifyPanel {...props} />;
     case "share":
       return <SharePanel {...props} />;
     case "research":
@@ -408,7 +603,7 @@ function ViewPanel(props: {
   }
 }
 
-function OverviewPanel({ notebook, sources, artifacts, notes, run }: Parameters<typeof ViewPanel>[0]) {
+function OverviewPanel({ notebook, sources, artifacts, notes, jobs, run }: Parameters<typeof ViewPanel>[0]) {
   const [summary, setSummary] = useState("");
   return (
     <section className="panel-grid">
@@ -439,6 +634,7 @@ function OverviewPanel({ notebook, sources, artifacts, notes, run }: Parameters<
       <MetricPanel icon={FilePlus2} label="Sources" value={sources.length} />
       <MetricPanel icon={Sparkles} label="Artifacts" value={artifacts.length} />
       <MetricPanel icon={FileText} label="Notes" value={notes.length} />
+      <JobsPanel jobs={jobs} />
     </section>
   );
 }
@@ -453,11 +649,40 @@ function MetricPanel({ icon: Icon, label, value }: { icon: React.ElementType; la
   );
 }
 
-function SourcesPanel({ notebook, sources, refresh, run }: Parameters<typeof ViewPanel>[0]) {
-  const [mode, setMode] = useState<"url" | "text">("url");
+function JobsPanel({ jobs }: { jobs: Job[] }) {
+  const visibleJobs = jobs.slice(0, 8);
+  return (
+    <div className="panel list-panel">
+      <div className="panel-title">
+        <span><Loader2 size={16} className={jobs.some(isActiveJob) ? "spin" : ""} /> Tasks</span>
+        <strong className="task-count">{jobs.filter(isActiveJob).length}</strong>
+      </div>
+      <div className="rows">
+        {visibleJobs.length ? visibleJobs.map((job) => (
+          <div className="data-row" key={`${job.kind}-${job.id}`}>
+            <span className={`row-dot ${job.status}`} />
+            <div>
+              <strong>{job.title}</strong>
+              <span>{job.kind} / {job.message || job.status}</span>
+            </div>
+            <span className={`job-pill ${job.status}`}>{job.status}</span>
+          </div>
+        )) : <div className="empty-row">No tasks</div>}
+      </div>
+    </div>
+  );
+}
+
+function SourcesPanel({ notebook, sources, upsertJob, refresh, run }: Parameters<typeof ViewPanel>[0]) {
+  const [mode, setMode] = useState<"url" | "text" | "file">("url");
   const [url, setUrl] = useState("");
   const [title, setTitle] = useState("");
   const [text, setText] = useState("");
+  const [file, setFile] = useState<File | null>(null);
+  const canAdd =
+    (mode === "url" && url.trim().length > 0) ||
+    (mode === "text" && text.trim().length > 0) ||
+    (mode === "file" && file !== null);
   return (
     <section className="panel-grid">
       <div className="panel form-panel">
@@ -465,25 +690,52 @@ function SourcesPanel({ notebook, sources, refresh, run }: Parameters<typeof Vie
         <div className="segmented">
           <button className={mode === "url" ? "active" : ""} onClick={() => setMode("url")}><Globe2 size={15} /> URL</button>
           <button className={mode === "text" ? "active" : ""} onClick={() => setMode("text")}><FileText size={15} /> Text</button>
-          <button disabled><FilePlus2 size={15} /> File</button>
+          <button className={mode === "file" ? "active" : ""} onClick={() => setMode("file")}><FilePlus2 size={15} /> File</button>
           <button disabled><Database size={15} /> Drive</button>
         </div>
         {mode === "url" ? (
           <label className="field"><span>URL</span><input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://..." /></label>
-        ) : (
+        ) : null}
+        {mode === "text" ? (
           <>
             <label className="field"><span>Title</span><input value={title} onChange={(e) => setTitle(e.target.value)} /></label>
             <label className="field"><span>Content</span><textarea value={text} onChange={(e) => setText(e.target.value)} /></label>
           </>
-        )}
+        ) : null}
+        {mode === "file" ? (
+          <>
+            <label className="field"><span>Title</span><input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Optional override" /></label>
+            <label className="field">
+              <span>File</span>
+              <input type="file" onChange={(e) => setFile(e.target.files?.[0] || null)} />
+            </label>
+            <span className="file-hint">{file ? `${file.name} (${Math.ceil(file.size / 1024)} KB)` : "Choose a document to upload."}</span>
+          </>
+        ) : null}
         <button
           className="btn-primary"
+          disabled={!canAdd}
           onClick={() =>
             run(async () => {
-              if (mode === "url") await api.addUrlSource(notebook.id, url);
-              else await api.addTextSource(notebook.id, title || "Text source", text);
+              let created: Source | null = null;
+              if (mode === "url") created = await api.addUrlSource(notebook.id, url);
+              else if (mode === "text") created = await api.addTextSource(notebook.id, title || "Text source", text);
+              else if (file) created = await api.addFileSource(notebook.id, file, title);
+              if (created?.id) {
+                upsertJob({
+                  id: created.id,
+                  notebookId: notebook.id,
+                  kind: "source",
+                  title: created.title || created.url || title || file?.name || "Source",
+                  status: isSourceReady(created.status) ? "completed" : "pending",
+                  message: `status ${created.status ?? "pending"}`,
+                  updatedAt: Date.now(),
+                });
+              }
               setUrl("");
+              setTitle("");
               setText("");
+              setFile(null);
               await refresh();
             })
           }
@@ -509,8 +761,17 @@ function SourcesPanel({ notebook, sources, refresh, run }: Parameters<typeof Vie
   );
 }
 
-function ChatPanel({ notebook, answer, setAnswer, run }: Parameters<typeof ViewPanel>[0]) {
+function ChatPanel({
+  notebook,
+  answer,
+  setAnswer,
+  addVerification,
+  busy,
+  run,
+}: Parameters<typeof ViewPanel>[0]) {
   const [question, setQuestion] = useState("");
+  const [answeredQuestion, setAnsweredQuestion] = useState("");
+  const [savedMessage, setSavedMessage] = useState("");
   return (
     <section className="panel-grid single">
       <div className="panel chat-panel">
@@ -519,18 +780,46 @@ function ChatPanel({ notebook, answer, setAnswer, run }: Parameters<typeof ViewP
         <div className="toolbar-row">
           <button
             className="btn-primary"
+            disabled={!question.trim() || busy}
             onClick={() =>
               run(async () => {
                 const result = await api.ask(notebook.id, question, answer?.conversation_id);
                 setAnswer(result);
+                setAnsweredQuestion(question.trim());
+                setSavedMessage("");
               })
             }
           >
             <MessageSquareText size={16} /> Ask
           </button>
-          <button className="icon-btn" title="Copy" disabled={!answer?.answer}>
+          <button
+            className="icon-btn"
+            title="Copy"
+            disabled={!answer?.answer}
+            onClick={async () => {
+              if (!answer?.answer) return;
+              try {
+                await navigator.clipboard.writeText(answer.answer);
+                setSavedMessage("Copied");
+              } catch {
+                setSavedMessage("Copy failed");
+              }
+            }}
+          >
             <Copy size={16} />
           </button>
+          <button
+            className="icon-btn"
+            title="Save to Verify"
+            disabled={!answer?.answer || !answeredQuestion}
+            onClick={() => {
+              addVerification(answeredQuestion, answer?.answer);
+              setSavedMessage("Saved to Verify");
+            }}
+          >
+            <ShieldCheck size={16} />
+          </button>
+          {savedMessage ? <span className="toolbar-message">{savedMessage}</span> : null}
         </div>
         {answer ? <article className="answer">{answer.answer}</article> : null}
       </div>
@@ -538,7 +827,7 @@ function ChatPanel({ notebook, answer, setAnswer, run }: Parameters<typeof ViewP
   );
 }
 
-function StudioPanel({ notebook, sources, refresh, run }: Parameters<typeof ViewPanel>[0]) {
+function StudioPanel({ notebook, sources, jobs, upsertJob, refresh, run }: Parameters<typeof ViewPanel>[0]) {
   const [type, setType] = useState("report");
   const [instructions, setInstructions] = useState("");
   const [difficulty, setDifficulty] = useState("medium");
@@ -582,7 +871,7 @@ function StudioPanel({ notebook, sources, refresh, run }: Parameters<typeof View
           className="btn-primary"
           onClick={() =>
             run(async () => {
-              await api.generateArtifact(notebook.id, {
+              const result = await api.generateArtifact(notebook.id, {
                 type,
                 source_ids: sourceIds,
                 instructions,
@@ -591,6 +880,18 @@ function StudioPanel({ notebook, sources, refresh, run }: Parameters<typeof View
                 audio_format: audioFormat,
                 audio_length: audioLength,
               });
+              if (result.task_id) {
+                upsertJob({
+                  id: result.task_id,
+                  notebookId: notebook.id,
+                  kind: "artifact",
+                  title: `${type} generation`,
+                  status: "pending",
+                  message: result.status || "pending",
+                  artifactType: type,
+                  updatedAt: Date.now(),
+                });
+              }
               await refresh();
             })
           }
@@ -598,15 +899,72 @@ function StudioPanel({ notebook, sources, refresh, run }: Parameters<typeof View
           <Sparkles size={16} /> Generate
         </button>
       </div>
+      <JobsPanel jobs={jobs.filter((job) => job.kind === "artifact")} />
     </section>
   );
 }
 
-function ArtifactsPanel({ artifacts }: Parameters<typeof ViewPanel>[0]) {
-  return <ListPanel title="Artifacts" icon={Sparkles} rows={artifacts.map((artifact) => ({ id: artifact.id, title: artifact.title || artifact.id, meta: `status ${artifact.status ?? "unknown"}` }))} />;
+function ArtifactsPanel({ notebook, artifacts, run }: Parameters<typeof ViewPanel>[0]) {
+  const [downloadType, setDownloadType] = useState("report");
+  const [outputFormat, setOutputFormat] = useState("json");
+  const [downloadMessage, setDownloadMessage] = useState("");
+  const formatChoices = getDownloadFormatChoices(downloadType);
+  useEffect(() => {
+    if (formatChoices.length && !formatChoices.includes(outputFormat)) {
+      setOutputFormat(formatChoices[0]);
+    }
+  }, [downloadType, formatChoices, outputFormat]);
+  return (
+    <section className="panel-grid">
+      <div className="panel form-panel">
+        <div className="panel-title"><span><Sparkles size={16} /> Download</span></div>
+        <label className="field">
+          <span>Artifact type</span>
+          <select value={downloadType} onChange={(e) => setDownloadType(e.target.value)}>
+            {downloadTypes.map((item) => <option key={item} value={item}>{item}</option>)}
+          </select>
+        </label>
+        {formatChoices.length ? (
+          <label className="field">
+            <span>Format</span>
+            <select value={outputFormat} onChange={(e) => setOutputFormat(e.target.value)}>
+              {formatChoices.map((item) => <option key={item} value={item}>{item}</option>)}
+            </select>
+          </label>
+        ) : null}
+        <button
+          className="btn-primary"
+          onClick={() =>
+            run(async () => {
+              const result = await api.downloadArtifact(
+                notebook.id,
+                downloadType,
+                formatChoices.length ? outputFormat : undefined,
+              );
+              setDownloadMessage(
+                result.canceled ? "Download canceled" : `Saved ${result.filename || result.path}`,
+              );
+            })
+          }
+        >
+          <Copy size={16} /> Download
+        </button>
+        {downloadMessage ? <span className="file-hint">{downloadMessage}</span> : null}
+      </div>
+      <ListPanel
+        title="Artifacts"
+        icon={Sparkles}
+        rows={artifacts.map((artifact) => ({
+          id: artifact.id,
+          title: artifact.title || artifact.id,
+          meta: `status ${artifact.status ?? "unknown"}`,
+        }))}
+      />
+    </section>
+  );
 }
 
-function NotesPanel({ notebook, notes, refresh, run }: Parameters<typeof ViewPanel>[0]) {
+function NotesPanel({ notebook, notes, busy, refresh, run }: Parameters<typeof ViewPanel>[0]) {
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
   return (
@@ -615,9 +973,111 @@ function NotesPanel({ notebook, notes, refresh, run }: Parameters<typeof ViewPan
         <div className="panel-title"><span><FileText size={16} /> New Note</span></div>
         <label className="field"><span>Title</span><input value={title} onChange={(e) => setTitle(e.target.value)} /></label>
         <label className="field"><span>Content</span><textarea value={content} onChange={(e) => setContent(e.target.value)} /></label>
-        <button className="btn-primary" onClick={() => run(async () => { await api.createNote(notebook.id, title || "New Note", content); setTitle(""); setContent(""); await refresh(); })}><Plus size={16} /> Save</button>
+        <button
+          className="btn-primary"
+          disabled={busy || (!title.trim() && !content.trim())}
+          onClick={() => run(async () => { await api.createNote(notebook.id, title || "New Note", content); setTitle(""); setContent(""); await refresh(); })}
+        >
+          <Plus size={16} /> Save
+        </button>
       </div>
       <ListPanel title="Notes" icon={FileText} rows={notes.map((note) => ({ id: note.id, title: note.title || note.id, meta: note.created_at || "note" }))} />
+    </section>
+  );
+}
+
+function VerifyPanel({
+  notebook,
+  verifications,
+  addVerification,
+  patchVerification,
+  deleteVerification,
+  run,
+}: Parameters<typeof ViewPanel>[0]) {
+  const [question, setQuestion] = useState("");
+  return (
+    <section className="panel-grid">
+      <div className="panel form-panel">
+        <div className="panel-title"><span><ShieldCheck size={16} /> Save for verification</span></div>
+        <label className="field">
+          <span>Claim or question</span>
+          <textarea
+            value={question}
+            onChange={(event) => setQuestion(event.target.value)}
+            placeholder="What should be verified again?"
+          />
+        </label>
+        <button
+          className="btn-primary"
+          disabled={!question.trim()}
+          onClick={() => {
+            addVerification(question);
+            setQuestion("");
+          }}
+        >
+          <Plus size={16} /> Save
+        </button>
+      </div>
+      <div className="panel list-panel verification-panel">
+        <div className="panel-title">
+          <span><ShieldCheck size={16} /> Saved verifications</span>
+          <strong className="task-count">{verifications.length}</strong>
+        </div>
+        <div className="verification-list">
+          {verifications.length ? verifications.map((record) => {
+            const latest = record.attempts[record.attempts.length - 1];
+            return (
+              <article className="verification-row" key={record.id}>
+                <div className="verification-head">
+                  <span className={`row-dot ${record.verified ? "completed" : "pending"}`} />
+                  <div>
+                    <strong>{record.question}</strong>
+                    <span>
+                      {record.attempts.length} checks / {record.verified ? "verified" : "needs review"}
+                    </span>
+                  </div>
+                </div>
+                <div className="verification-answer">
+                  {latest?.answer || "No verification result yet."}
+                </div>
+                <div className="verification-actions">
+                  <button
+                    className="btn-secondary"
+                    onClick={() =>
+                      run(async () => {
+                        const result = await api.ask(notebook.id, record.question);
+                        patchVerification(record.id, {
+                          attempts: [
+                            ...record.attempts,
+                            { answer: result.answer, checkedAt: Date.now() },
+                          ],
+                          verified: false,
+                        });
+                      })
+                    }
+                  >
+                    <RefreshCw size={15} /> Verify again
+                  </button>
+                  <button
+                    className={`icon-btn ${record.verified ? "verified" : ""}`}
+                    title={record.verified ? "Mark as needs review" : "Mark as verified"}
+                    onClick={() => patchVerification(record.id, { verified: !record.verified })}
+                  >
+                    <CheckCircle2 size={16} />
+                  </button>
+                  <button
+                    className="icon-btn danger"
+                    title="Delete verification"
+                    onClick={() => deleteVerification(record.id)}
+                  >
+                    <Trash2 size={15} />
+                  </button>
+                </div>
+              </article>
+            );
+          }) : <div className="empty-row">No saved verifications</div>}
+        </div>
+      </div>
     </section>
   );
 }
@@ -644,6 +1104,64 @@ function ComingSoon({ view }: { view: View }) {
   );
 }
 
+function isActiveJob(job: Job) {
+  return job.status === "pending" || job.status === "in_progress";
+}
+
+function isSourceReady(status: Source["status"]) {
+  return status === 3 || status === "ready" || status === "READY" || status === "completed";
+}
+
+function isArtifactComplete(status: string | undefined, isComplete: boolean | undefined) {
+  return isComplete === true || status === "completed" || status === "COMPLETED";
+}
+
+function isArtifactFailed(status: string | undefined) {
+  return status === "failed" || status === "FAILED" || status === "removed" || status === "REMOVED";
+}
+
+function getDownloadFormatChoices(type: string) {
+  if (type === "slide-deck") return ["pdf", "pptx"];
+  if (type === "quiz" || type === "flashcards") return ["json", "markdown", "html"];
+  return [];
+}
+
+function loadVerifications(): VerificationRecord[] {
+  try {
+    const value = window.localStorage.getItem(verificationStorageKey);
+    if (!value) return [];
+    const parsed: unknown = JSON.parse(value);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(isVerificationRecord);
+  } catch {
+    return [];
+  }
+}
+
+function isVerificationRecord(value: unknown): value is VerificationRecord {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Partial<VerificationRecord>;
+  return (
+    typeof record.id === "string" &&
+    typeof record.notebookId === "string" &&
+    typeof record.question === "string" &&
+    typeof record.createdAt === "number" &&
+    typeof record.verified === "boolean" &&
+    Array.isArray(record.attempts) &&
+    record.attempts.every(
+      (attempt) =>
+        attempt &&
+        typeof attempt === "object" &&
+        typeof attempt.answer === "string" &&
+        typeof attempt.checkedAt === "number",
+    )
+  );
+}
+
+function makeVerificationId() {
+  return globalThis.crypto?.randomUUID?.() || `verify-${Date.now()}-${Math.random()}`;
+}
+
 function ListPanel({ title, icon: Icon, rows }: { title: string; icon: React.ElementType; rows: Array<{ id: string; title: string; meta: string; onDelete?: () => void }> }) {
   return (
     <div className="panel list-panel">
@@ -653,7 +1171,15 @@ function ListPanel({ title, icon: Icon, rows }: { title: string; icon: React.Ele
           <div className="data-row" key={row.id}>
             <span className="row-dot" />
             <div><strong>{row.title}</strong><span>{row.meta}</span></div>
-            {row.onDelete ? <button className="icon-btn danger" onClick={row.onDelete}><Trash2 size={15} /></button> : null}
+            {row.onDelete ? (
+              <button
+                className="icon-btn danger"
+                title={`Delete ${row.title}`}
+                onClick={row.onDelete}
+              >
+                <Trash2 size={15} />
+              </button>
+            ) : null}
           </div>
         )) : <div className="empty-row">No items</div>}
       </div>
@@ -665,13 +1191,110 @@ function VersionModal({ appInfo, onClose }: { appInfo: AppInfo | null; onClose: 
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <section className="modal" onClick={(event) => event.stopPropagation()}>
-        <div className="panel-title"><span><RefreshCw size={16} /> Update</span><button className="icon-btn" onClick={onClose}>×</button></div>
+        <div className="panel-title">
+          <span><RefreshCw size={16} /> Update</span>
+          <button className="icon-btn" title="Close update dialog" onClick={onClose}><X size={16} /></button>
+        </div>
         <div className="update-grid">
           <span>Current</span><strong>{appInfo?.version || "0.1.0"}</strong>
           <span>Backend</span><strong>{appInfo?.backend?.status || "starting"}</strong>
           <span>Channel</span><strong>local</strong>
         </div>
         <button className="btn-primary" disabled><RefreshCw size={16} /> Check update</button>
+      </section>
+    </div>
+  );
+}
+
+function NotebookEditorModal({
+  dialog,
+  busy,
+  onChange,
+  onClose,
+  onSubmit,
+}: {
+  dialog: NotebookDialogState;
+  busy: boolean;
+  onChange: (title: string) => void;
+  onClose: () => void;
+  onSubmit: () => Promise<void>;
+}) {
+  const isCreate = dialog.mode === "create";
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <form
+        className="modal"
+        role="dialog"
+        aria-modal="true"
+        aria-label={isCreate ? "Create notebook" : "Rename notebook"}
+        onClick={(event) => event.stopPropagation()}
+        onSubmit={(event) => {
+          event.preventDefault();
+          onSubmit();
+        }}
+      >
+        <div className="panel-title">
+          <span><BookOpen size={16} /> {isCreate ? "Create notebook" : "Rename notebook"}</span>
+          <button className="icon-btn" type="button" title="Close notebook dialog" onClick={onClose}>
+            <X size={16} />
+          </button>
+        </div>
+        <label className="field">
+          <span>Notebook title</span>
+          <input
+            autoFocus
+            value={dialog.title}
+            onChange={(event) => onChange(event.target.value)}
+            placeholder="Notebook title"
+          />
+        </label>
+        <div className="modal-actions">
+          <button className="btn-secondary" type="button" onClick={onClose}>Cancel</button>
+          <button className="btn-primary" type="submit" disabled={busy || !dialog.title.trim()}>
+            {isCreate ? <Plus size={16} /> : <FileText size={16} />}
+            {isCreate ? "Create" : "Rename"}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+function ConfirmDeleteModal({
+  notebook,
+  busy,
+  onClose,
+  onConfirm,
+}: {
+  notebook: Notebook;
+  busy: boolean;
+  onClose: () => void;
+  onConfirm: () => Promise<void>;
+}) {
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <section
+        className="modal"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Delete notebook"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="panel-title">
+          <span><Trash2 size={16} /> Delete notebook</span>
+          <button className="icon-btn" title="Close delete dialog" onClick={onClose}>
+            <X size={16} />
+          </button>
+        </div>
+        <p className="modal-copy">
+          Delete <strong>{notebook.title}</strong>? This action cannot be undone.
+        </p>
+        <div className="modal-actions">
+          <button className="btn-secondary" onClick={onClose}>Cancel</button>
+          <button className="btn-danger" disabled={busy} onClick={onConfirm}>
+            <Trash2 size={16} /> Delete
+          </button>
+        </div>
       </section>
     </div>
   );

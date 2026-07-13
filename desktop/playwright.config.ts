@@ -1,5 +1,8 @@
 import { defineConfig, devices } from "@playwright/test";
 
+const testPort = process.env.NOTEBOOKLM_DESKTOP_TEST_PORT || "5173";
+const testBaseUrl = `http://127.0.0.1:${testPort}`;
+
 export default defineConfig({
   testDir: "./tests",
   outputDir: "./test-results",
@@ -8,7 +11,7 @@ export default defineConfig({
     timeout: 5_000,
   },
   use: {
-    baseURL: "http://127.0.0.1:5173",
+    baseURL: testBaseUrl,
     trace: "on-first-retry",
     screenshot: "only-on-failure",
   },
@@ -31,8 +34,8 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: "npm run dev",
-    url: "http://127.0.0.1:5173",
+    command: `npm run dev -- --port ${testPort}`,
+    url: testBaseUrl,
     reuseExistingServer: !process.env.CI,
     timeout: 30_000,
   },
