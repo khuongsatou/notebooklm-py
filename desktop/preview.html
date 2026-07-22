@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NotebookLM Pro Desktop - Button Audit Evidence</title>
+  <style>
+    :root {
+      --bg: #eef3f6;
+      --paper: #ffffff;
+      --ink: #172536;
+      --muted: #627386;
+      --line: #d9e2ea;
+      --dark: #142130;
+      --green: #1f7a5c;
+      --amber: #9a6500;
+      --blue: #1f5f8f;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.55;
+    }
+    .wrap { width: min(1180px, calc(100% - 32px)); margin: 0 auto; padding: 28px 0 56px; }
+    .hero {
+      background: var(--dark);
+      color: #fff;
+      border-radius: 8px;
+      padding: 24px;
+      margin-bottom: 18px;
+    }
+    .hero h1 { margin: 0; font-size: 28px; line-height: 1.2; letter-spacing: 0; }
+    .hero p { margin: 8px 0 0; color: #c8d6df; }
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+      margin-bottom: 18px;
+    }
+    .stat, .panel {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 18px;
+    }
+    .stat strong { display: block; font-size: 30px; line-height: 1; }
+    .stat span { color: var(--muted); font-size: 13px; }
+    h2 { margin: 0 0 12px; font-size: 20px; letter-spacing: 0; }
+    p { margin: 0 0 12px; }
+    a { color: var(--blue); }
+    code {
+      background: #edf2f5;
+      border-radius: 4px;
+      padding: 2px 5px;
+      font-size: 0.92em;
+    }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      min-height: 24px;
+      border-radius: 999px;
+      padding: 3px 9px;
+      font-size: 12px;
+      font-weight: 700;
+      border: 1px solid var(--line);
+      background: #f7fafc;
+    }
+    .pass { color: var(--green); border-color: #b9dfd1; background: #effaf5; }
+    .disabled { color: var(--amber); border-color: #ead5a7; background: #fff8e6; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-top: 18px; }
+    table { width: 100%; border-collapse: collapse; overflow-wrap: anywhere; }
+    th, td { border: 1px solid var(--line); padding: 9px 10px; text-align: left; vertical-align: top; }
+    th { background: #f4f7fa; }
+    .small { color: var(--muted); font-size: 13px; }
+    .list { margin: 0; padding-left: 20px; }
+    .list li { margin: 6px 0; }
+    @media (max-width: 820px) {
+      .stats, .grid { grid-template-columns: 1fr; }
+      .wrap { width: min(100% - 22px, 1180px); padding-top: 16px; }
+      .hero, .panel, .stat { padding: 16px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <header class="hero">
+      <h1>NotebookLM Pro Desktop - Button Audit Evidence</h1>
+      <p>Kiểm từng nút MVP để xác nhận nút enabled có backend call hoặc state change thật; nút thiếu input phải disabled rõ ràng.</p>
+    </header>
+
+    <section class="stats" aria-label="Button audit summary">
+      <div class="stat"><strong>62</strong><span>controls audited</span></div>
+      <div class="stat"><strong>32</strong><span>backend-backed controls</span></div>
+      <div class="stat"><strong>24</strong><span>local-state controls</span></div>
+      <div class="stat"><strong>6</strong><span>disabled by design</span></div>
+    </section>
+
+    <section class="panel">
+      <h2>Verdict</h2>
+      <p><span class="badge pass">PASS</span> Không phát hiện nút enabled kiểu mock-only trong renderer desktop. Research, Labels, Settings, Drive source, và Check update hiện đều có đường gọi qua <code>api.ts</code> tới preload/backend bridge.</p>
+      <p><span class="badge disabled">Input-gated</span> Các nút disabled còn lại chỉ bị khóa khi thiếu input hoặc thiếu state cần thiết, ví dụ câu hỏi trống, source trống, note trống, hoặc chưa có answer để copy.</p>
+      <p class="small">Bằng chứng được tạo ngày <code>2026-07-14T07:24:35.431Z</code> bằng Playwright Chromium 1280. Audit dùng preload bridge giả lập để kiểm renderer contract và request path, không gọi NotebookLM live.</p>
+    </section>
+
+    <section class="grid">
+      <article class="panel">
+        <h2>Evidence Files</h2>
+        <ul class="list">
+          <li><a href="tests/button-audit.spec.ts">tests/button-audit.spec.ts</a> - test click từng control và fail nếu thiếu backend/local evidence.</li>
+          <li><a href="test-results/button-audit.json">test-results/button-audit.json</a> - JSON audit sinh từ lần chạy mới nhất.</li>
+          <li><a href="tests/ui.spec.ts">tests/ui.spec.ts</a> - regression UI layout/overflow hiện có.</li>
+        </ul>
+      </article>
+      <article class="panel">
+        <h2>Commands Run</h2>
+        <ul class="list">
+          <li><code>npx playwright test tests/button-audit.spec.ts --project=chromium-1280</code> - PASS, 1/1.</li>
+          <li><code>npx playwright test tests/ui.spec.ts --project=chromium-1280</code> - PASS, 7/7.</li>
+          <li><code>npm run build</code> - PASS.</li>
+          <li><code>uv run --extra server pytest tests/server -q</code> - PASS, 163/163.</li>
+          <li><code>test-results/button-audit.json</code> được sinh với 62/62 PASS.</li>
+        </ul>
+      </article>
+    </section>
+
+    <section class="panel" style="margin-top:18px">
+      <h2>Button Matrix</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Area</th>
+            <th>Control</th>
+            <th>Classification</th>
+            <th>Evidence</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td>Tabs</td><td>Research / Labels / Settings</td><td>backend/local-state</td><td>Tabs mở được; Labels gọi <code>GET /labels</code>, Settings gọi <code>GET /v1/settings</code>.</td></tr>
+          <tr><td>Top bar</td><td>Refresh notebooks</td><td>backend</td><td><code>GET /v1/status</code>; <code>GET /v1/notebooks</code></td></tr>
+          <tr><td>Sidebar</td><td>Select notebook</td><td>backend</td><td><code>GET /sources</code>; <code>GET /artifacts</code>; <code>GET /notes</code></td></tr>
+          <tr><td>Overview</td><td>Load summary</td><td>backend</td><td><code>GET /summary</code></td></tr>
+          <tr><td>Version</td><td>Open/close modal</td><td>local-state</td><td>Modal opens and closes without backend request.</td></tr>
+          <tr><td>Version</td><td>Check update</td><td>backend</td><td><code>GET /v1/settings/update</code></td></tr>
+          <tr><td>Notebook</td><td>Create / Rename / Delete / Refresh</td><td>backend</td><td><code>POST</code>, <code>PATCH</code>, <code>DELETE</code>, and workspace refresh calls.</td></tr>
+          <tr><td>Notebook</td><td>Cancel delete</td><td>local-state</td><td>Dialog closes without backend request.</td></tr>
+          <tr><td>Sources</td><td>URL / Text / File / Drive mode</td><td>local-state</td><td>Relevant input panel becomes visible.</td></tr>
+          <tr><td>Sources</td><td>Add empty source</td><td>disabled-by-design</td><td>Disabled until URL, text, or file input exists.</td></tr>
+          <tr><td>Sources</td><td>Add URL / Text / File / Drive / Delete</td><td>backend</td><td><code>POST /sources/url</code>, <code>POST /sources/text</code>, <code>POST /sources/file</code>, <code>POST /sources/drive</code>, <code>DELETE /sources/{id}</code>.</td></tr>
+          <tr><td>Chat</td><td>Ask / Copy / Save to Verify before content</td><td>disabled-by-design</td><td>Disabled until the question or answer state exists.</td></tr>
+          <tr><td>Chat</td><td>Ask</td><td>backend</td><td><code>POST /chat</code></td></tr>
+          <tr><td>Chat</td><td>Copy / Save to Verify</td><td>local-state</td><td>Clipboard receives answer; verification record appears.</td></tr>
+          <tr><td>Verify</td><td>Verify again</td><td>backend</td><td><code>POST /chat</code></td></tr>
+          <tr><td>Verify</td><td>Mark verified / Delete / Save manual</td><td>local-state</td><td>Status toggles, record is removed, manual record appears.</td></tr>
+          <tr><td>Studio</td><td>Generate artifact</td><td>backend</td><td><code>POST /artifacts</code> plus workspace refresh.</td></tr>
+          <tr><td>Artifacts</td><td>Download artifact</td><td>backend</td><td><code>POST /artifacts/download</code></td></tr>
+          <tr><td>Notes</td><td>Save empty note</td><td>disabled-by-design</td><td>Disabled until note title or content exists.</td></tr>
+          <tr><td>Notes</td><td>Save note</td><td>backend</td><td><code>POST /notes</code> plus workspace refresh.</td></tr>
+          <tr><td>Share</td><td>Refresh share status</td><td>backend</td><td><code>GET /share</code></td></tr>
+          <tr><td>Research</td><td>Start / Status / Cancel</td><td>backend</td><td><code>POST /research</code>, <code>GET /research/status</code>, <code>DELETE /research/{task_id}</code>.</td></tr>
+          <tr><td>Labels</td><td>Refresh / Create / Add source / Generate</td><td>backend</td><td><code>GET /labels</code>, <code>POST /labels</code>, <code>POST /labels/{id}/sources</code>, <code>POST /labels/generate</code>.</td></tr>
+          <tr><td>Settings</td><td>Refresh / Save language / Check update</td><td>backend</td><td><code>GET /v1/settings</code>, <code>PATCH /v1/settings/language</code>, <code>GET /v1/settings/update</code>.</td></tr>
+        </tbody>
+      </table>
+    </section>
+  </main>
+</body>
+</html>

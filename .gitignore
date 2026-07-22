@@ -36,6 +36,11 @@ INVESTIGATION*.md
 investigation_output/
 downloads/
 
+# Local generated media/workflow artifacts. These can be multiple GB and are not
+# part of the source distribution.
+course/
+workflows/
+
 # VCR cassettes - committed after security review
 # Cassettes are scrubbed of sensitive data (cookies, tokens, user IDs, emails)
 # See tests/vcr_config.py for scrubbing patterns

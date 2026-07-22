@@ -41,6 +41,9 @@ test.beforeEach(async ({ page }) => {
         sources: [...sourcesSeed],
         artifacts: [...artifactsSeed],
         notes: [...notesSeed],
+        labels: [{ id: "label-1", name: "Architecture", emoji: "🏷️", source_ids: ["src-1"] }],
+        researchTaskId: "research-1",
+        language: "en",
       };
       Object.defineProperty(navigator, "clipboard", {
         configurable: true,
@@ -128,6 +131,17 @@ test.beforeEach(async ({ page }) => {
             state.sources = [...state.sources, source];
             return source;
           }
+          if (path.includes("/sources/drive") && method === "POST") {
+            const body = request.body as { title?: string; file_id?: string };
+            const source = {
+              id: `src-${state.sources.length + 1}`,
+              title: body.title || "Drive source",
+              status: 1,
+              url: `https://drive.google.com/file/d/${body.file_id || "drive"}`,
+            };
+            state.sources = [...state.sources, source];
+            return source;
+          }
           if (path.includes("/sources/") && method === "DELETE") {
             const sourceId = path.split("/").pop();
             state.sources = state.sources.filter((item) => item.id !== sourceId);
@@ -178,6 +192,111 @@ test.beforeEach(async ({ page }) => {
               is_public: false,
               access: "restricted",
               shared_users: [],
+            };
+          }
+          if (path.includes("/labels/generate") && method === "POST") {
+            state.labels = [
+              ...state.labels,
+              { id: `label-${state.labels.length + 1}`, name: "Generated", emoji: "✨", source_ids: ["src-1"] },
+            ];
+            return { labels: state.labels, count: state.labels.length };
+          }
+          if (path.includes("/labels") && method === "GET" && !path.includes("/labels/")) {
+            return { labels: state.labels };
+          }
+          if (path.includes("/labels") && method === "POST" && !path.includes("/sources")) {
+            const body = request.body as { name?: string; emoji?: string };
+            const label = {
+              id: `label-${state.labels.length + 1}`,
+              name: body.name || "New label",
+              emoji: body.emoji || "",
+              source_ids: [],
+            };
+            state.labels = [label, ...state.labels];
+            return label;
+          }
+          if (path.includes("/labels/") && path.includes("/emoji") && method === "PATCH") {
+            const labelId = path.split("/labels/")[1].split("/")[0];
+            const body = request.body as { emoji?: string };
+            const label = state.labels.find((item) => item.id === labelId);
+            if (!label) throw new Error("Label not found");
+            label.emoji = body.emoji || "";
+            return label;
+          }
+          if (path.includes("/labels/") && path.includes("/sources") && method === "POST") {
+            const labelId = path.split("/labels/")[1].split("/")[0];
+            const body = request.body as { source_ids?: string[] };
+            const label = state.labels.find((item) => item.id === labelId);
+            if (!label) throw new Error("Label not found");
+            label.source_ids = Array.from(new Set([...label.source_ids, ...(body.source_ids || [])]));
+            return { label, source_ids: body.source_ids || [] };
+          }
+          if (path.includes("/labels/") && path.includes("/sources") && method === "DELETE") {
+            const labelId = path.split("/labels/")[1].split("/")[0];
+            const body = request.body as { source_ids?: string[] };
+            const label = state.labels.find((item) => item.id === labelId);
+            if (!label) throw new Error("Label not found");
+            const remove = new Set(body.source_ids || []);
+            label.source_ids = label.source_ids.filter((sourceId) => !remove.has(sourceId));
+            return { label, source_ids: body.source_ids || [] };
+          }
+          if (path.includes("/labels/") && method === "PATCH") {
+            const labelId = path.split("/labels/")[1];
+            const body = request.body as { name?: string };
+            const label = state.labels.find((item) => item.id === labelId);
+            if (!label) throw new Error("Label not found");
+            label.name = body.name || label.name;
+            return label;
+          }
+          if (path.includes("/labels/") && method === "DELETE") {
+            const labelId = path.split("/labels/")[1];
+            state.labels = state.labels.filter((item) => item.id !== labelId);
+            return {};
+          }
+          if (path.includes("/research/status")) {
+            return {
+              notebook_id: "nb-1",
+              task_id: state.researchTaskId,
+              kind: "completed",
+              status: "completed",
+              query: "audit",
+              sources: [{ title: "Research result", url: "https://example.com/research" }],
+              summary: "Research completed",
+              report: "Research report",
+            };
+          }
+          if (path.includes("/research/") && method === "DELETE") {
+            return {};
+          }
+          if (path.includes("/research") && method === "POST") {
+            return {
+              task_id: state.researchTaskId,
+              report_id: null,
+              notebook_id: "nb-1",
+              query: String((request.body as { query?: string })?.query || ""),
+              mode: String((request.body as { mode?: string })?.mode || "fast"),
+            };
+          }
+          if (path === "/v1/settings") {
+            return {
+              server: "notebooklm-server",
+              version: "0.8.0",
+              language: state.language,
+              language_name: state.language === "vi" ? "Tiếng Việt" : "English",
+              languages: { en: "English", vi: "Tiếng Việt" },
+            };
+          }
+          if (path === "/v1/settings/language" && method === "PATCH") {
+            state.language = String((request.body as { code?: string })?.code || "en");
+            return { language: state.language, language_name: state.language === "vi" ? "Tiếng Việt" : "English" };
+          }
+          if (path === "/v1/settings/update") {
+            return {
+              current_version: "0.1.0",
+              latest_version: "0.1.0",
+              update_available: false,
+              channel: "local",
+              message: "Local build is running; no remote update feed is configured.",
             };
           }
           return {};
@@ -247,8 +366,7 @@ test("all workspace tabs render without layout overflow", async ({ page }) => {
 
   for (const tab of ["Research", "Labels", "Settings"]) {
     const button = page.locator(".tabs").getByRole("button", { name: tab, exact: true });
-    await expect(button).toBeDisabled();
-    await expect(button).toHaveAttribute("title", "Not available in MVP");
+    await expect(button).toBeEnabled();
   }
 });
 
@@ -320,6 +438,8 @@ test("remaining MVP buttons produce visible state changes or backend calls", asy
   await expect(page.getByText("Check this claim later", { exact: true })).toHaveCount(0);
 
   await page.getByRole("button", { name: /Version/ }).click();
+  await page.getByRole("button", { name: "Check update" }).click();
+  await expect(page.getByText("Local build is running")).toBeVisible();
   await page.getByTitle("Close update dialog").click();
   await expect(page.getByRole("dialog")).toHaveCount(0);
 });
@@ -337,6 +457,10 @@ test("source, chat, studio, notes, and share flows keep panels stable", async ({
   });
   await page.getByRole("button", { name: "Add" }).click();
   await expect(page.getByText("brief.txt")).toBeVisible();
+  await page.getByRole("button", { name: "Drive" }).click();
+  await page.getByPlaceholder("Google Drive file id").fill("drive-file-1");
+  await page.getByRole("button", { name: "Add" }).click();
+  await expect(page.getByText("Drive source")).toBeVisible();
 
   await clickTab(page, "Chat");
   await page.getByPlaceholder("Ask this notebook...").fill("Summarize the source map");
@@ -381,6 +505,27 @@ test("source, chat, studio, notes, and share flows keep panels stable", async ({
   await clickTab(page, "Share");
   await page.locator(".panel-title .icon-btn").click();
   await expect(page.getByText("restricted")).toBeVisible();
+
+  await clickTab(page, "Research");
+  await page.getByPlaceholder("Research topic or question").fill("Find source gaps");
+  await page.getByRole("button", { name: "Start" }).click();
+  await expect(page.locator(".task-count", { hasText: "started" })).toBeVisible();
+  await page.getByRole("button", { name: "Status" }).click();
+  await expect(page.getByText("Research completed")).toBeVisible();
+
+  await clickTab(page, "Labels");
+  await page.getByPlaceholder("New label").fill("QA label");
+  await page.locator(".form-panel").getByRole("button", { name: "Create", exact: true }).click();
+  await expect(page.getByRole("button", { name: /QA label 0 source/ })).toBeVisible();
+  await page.getByRole("button", { name: "Add source" }).click();
+  await expect(page.getByRole("button", { name: /QA label 1 source/ })).toBeVisible();
+
+  await clickTab(page, "Settings");
+  await page.locator("select").selectOption("vi");
+  await page.getByRole("button", { name: "Save language" }).click();
+  await expect(page.locator(".json-preview", { hasText: '"language_name": "Tiếng Việt"' })).toBeVisible();
+  await page.getByRole("button", { name: "Check update" }).click();
+  await expect(page.getByText("Local build is running")).toBeVisible();
 
   await expectNoHorizontalOverflow(page);
   await expectNoVisibleOverlap(page);

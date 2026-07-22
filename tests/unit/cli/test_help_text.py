@@ -27,6 +27,7 @@ from click.testing import CliRunner
 
 from notebooklm.cli.artifact_cmd import artifact
 from notebooklm.cli.download_cmd import download
+from notebooklm.cli.mcp_cmd import mcp
 from notebooklm.cli.note_cmd import note
 from notebooklm.cli.source_cmd import source
 
@@ -112,3 +113,13 @@ def test_group_docstring_lists_every_subcommand(
         f"Update the docstring 'Commands:' / 'Types:' block in "
         f"src/notebooklm/cli/{group_name}_cmd.py."
     )
+
+
+def test_mcp_group_help_does_not_expose_internal_notes(runner: CliRunner) -> None:
+    """The MCP help overview should read like user guidance, not maintainer notes."""
+    result = runner.invoke(mcp, ["--help"])
+
+    assert result.exit_code == 0
+    assert "Install or update" in result.output or "install" in result.output.lower()
+    for internal_term in ("tests/unit", "guardrail", "cli/grouped.py", "no-orphans"):
+        assert internal_term not in result.output

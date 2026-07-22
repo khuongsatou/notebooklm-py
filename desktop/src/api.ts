@@ -4,10 +4,15 @@ import type {
   ArtifactPollResult,
   ChatAnswer,
   DownloadResult,
+  Label,
   Note,
   Notebook,
+  ResearchStart,
+  ResearchStatus,
+  SettingsState,
   Source,
   SourcePollResult,
+  UpdateStatus,
 } from "./types";
 
 async function request<T>(
@@ -78,6 +83,11 @@ export const api = {
       file: { name: file.name, type: file.type, data },
     });
   },
+  addDriveSource: (notebookId: string, fileId: string, title: string, mimeType: string) =>
+    request<Source>(`/v1/notebooks/${encodeURIComponent(notebookId)}/sources/drive`, {
+      method: "POST",
+      body: { file_id: fileId, title, mime_type: mimeType },
+    }),
   deleteSource: (notebookId: string, sourceId: string) =>
     request<void>(
       `/v1/notebooks/${encodeURIComponent(notebookId)}/sources/${encodeURIComponent(sourceId)}`,
@@ -131,6 +141,70 @@ export const api = {
     }),
   getShare: (notebookId: string) =>
     request<Record<string, unknown>>(`/v1/notebooks/${encodeURIComponent(notebookId)}/share`),
+  listLabels: async (notebookId: string) => {
+    const result = await request<{ labels: Label[] }>(
+      `/v1/notebooks/${encodeURIComponent(notebookId)}/labels`,
+    );
+    return result.labels;
+  },
+  createLabel: (notebookId: string, name: string, emoji: string) =>
+    request<Label>(`/v1/notebooks/${encodeURIComponent(notebookId)}/labels`, {
+      method: "POST",
+      body: { name, emoji },
+    }),
+  renameLabel: (notebookId: string, labelId: string, name: string) =>
+    request<Label>(
+      `/v1/notebooks/${encodeURIComponent(notebookId)}/labels/${encodeURIComponent(labelId)}`,
+      { method: "PATCH", body: { name } },
+    ),
+  setLabelEmoji: (notebookId: string, labelId: string, emoji: string) =>
+    request<Label>(
+      `/v1/notebooks/${encodeURIComponent(notebookId)}/labels/${encodeURIComponent(labelId)}/emoji`,
+      { method: "PATCH", body: { emoji } },
+    ),
+  generateLabels: (notebookId: string, scope: string) =>
+    request<{ labels: Label[]; count: number }>(
+      `/v1/notebooks/${encodeURIComponent(notebookId)}/labels/generate`,
+      { method: "POST", body: { scope } },
+    ),
+  addLabelSources: (notebookId: string, labelId: string, sourceIds: string[]) =>
+    request<{ label: Label; source_ids: string[] }>(
+      `/v1/notebooks/${encodeURIComponent(notebookId)}/labels/${encodeURIComponent(labelId)}/sources`,
+      { method: "POST", body: { source_ids: sourceIds } },
+    ),
+  removeLabelSources: (notebookId: string, labelId: string, sourceIds: string[]) =>
+    request<{ label: Label; source_ids: string[] }>(
+      `/v1/notebooks/${encodeURIComponent(notebookId)}/labels/${encodeURIComponent(labelId)}/sources`,
+      { method: "DELETE", body: { source_ids: sourceIds } },
+    ),
+  deleteLabel: (notebookId: string, labelId: string) =>
+    request<void>(
+      `/v1/notebooks/${encodeURIComponent(notebookId)}/labels/${encodeURIComponent(labelId)}`,
+      { method: "DELETE" },
+    ),
+  startResearch: (notebookId: string, body: { query: string; source: string; mode: string }) =>
+    request<ResearchStart>(`/v1/notebooks/${encodeURIComponent(notebookId)}/research`, {
+      method: "POST",
+      body,
+    }),
+  getResearchStatus: (notebookId: string, taskId?: string) =>
+    request<ResearchStatus>(
+      `/v1/notebooks/${encodeURIComponent(notebookId)}/research/status${
+        taskId ? `?task_id=${encodeURIComponent(taskId)}` : ""
+      }`,
+    ),
+  cancelResearch: (notebookId: string, taskId: string) =>
+    request<void>(
+      `/v1/notebooks/${encodeURIComponent(notebookId)}/research/${encodeURIComponent(taskId)}`,
+      { method: "DELETE" },
+    ),
+  getSettings: () => request<SettingsState>("/v1/settings"),
+  setLanguage: (code: string) =>
+    request<{ language: string; language_name?: string | null }>("/v1/settings/language", {
+      method: "PATCH",
+      body: { code },
+    }),
+  checkUpdate: () => request<UpdateStatus>("/v1/settings/update"),
 };
 
 function artifactFilename(type: string, outputFormat?: string) {

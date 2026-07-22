@@ -18,9 +18,16 @@ from typing import Any
 
 from notebooklm._types.artifacts import Artifact, GenerationState, GenerationStatus
 from notebooklm._types.chat import AskResult
+from notebooklm._types.labels import Label
 from notebooklm._types.notebooks import Notebook
 from notebooklm._types.notes import Note
-from notebooklm._types.research import SourceGuide
+from notebooklm._types.research import (
+    ResearchSource,
+    ResearchStart,
+    ResearchStatus,
+    ResearchTask,
+    SourceGuide,
+)
 from notebooklm._types.sharing import SharedUser, ShareStatus
 from notebooklm._types.sources import Source, SourceFulltext
 from notebooklm.exceptions import NotebookNotFoundError, NoteNotFoundError
@@ -116,6 +123,15 @@ class FakeSources:
     ) -> Source:
         self._s.uploaded_paths.append(path)
         return self._add(notebook_id, title=title or "file")
+
+    async def add_drive(self, notebook_id: str, file_id: str, title: str, mime_type: str) -> Source:
+        self._s.last_drive_add = {
+            "notebook_id": notebook_id,
+            "file_id": file_id,
+            "title": title,
+            "mime_type": mime_type,
+        }
+        return self._add(notebook_id, title=title, url=f"https://drive.google.com/file/d/{file_id}")
 
     async def delete(self, notebook_id: str, source_id: str) -> None:
         self._s.sources_store.get(notebook_id, {}).pop(source_id, None)
@@ -339,6 +355,131 @@ class FakeSharing:
         return self._s.share_status(notebook_id)
 
 
+class FakeLabels:
+    def __init__(self, state: FakeClient) -> None:
+        self._s = state
+
+    async def list(self, notebook_id: str) -> list[Label]:
+        return list(self._s.labels_store.get(notebook_id, {}).values())
+
+    async def create(self, notebook_id: str, name: str, emoji: str = "") -> Label:
+        bucket = self._s.labels_store.setdefault(notebook_id, {})
+        label = Label(
+            id=f"label-{self._s.next_label}",
+            name=name,
+            notebook_id=notebook_id,
+            emoji=emoji or None,
+            source_ids=[],
+        )
+        self._s.next_label += 1
+        bucket[label.id] = label
+        return label
+
+    async def generate(self, notebook_id: str, scope: str = "unlabeled") -> list[Label]:
+        source_ids = list(self._s.sources_store.get(notebook_id, {}).keys())
+        label = await self.create(notebook_id, f"{scope.title()} sources", "🏷️")
+        label.source_ids = source_ids[:2]
+        return await self.list(notebook_id)
+
+    async def rename(self, notebook_id: str, label_id: str, new_name: str) -> Label:
+        label = self._get(notebook_id, label_id)
+        label.name = new_name
+        return label
+
+    async def set_emoji(self, notebook_id: str, label_id: str, emoji: str) -> Label:
+        label = self._get(notebook_id, label_id)
+        label.emoji = emoji
+        return label
+
+    async def add_sources(self, notebook_id: str, label_id: str, source_ids: list[str]) -> Label:
+        label = self._get(notebook_id, label_id)
+        label.source_ids = list(dict.fromkeys([*label.source_ids, *source_ids]))
+        return label
+
+    async def remove_sources(self, notebook_id: str, label_id: str, source_ids: list[str]) -> Label:
+        label = self._get(notebook_id, label_id)
+        remove = set(source_ids)
+        label.source_ids = [source_id for source_id in label.source_ids if source_id not in remove]
+        return label
+
+    async def sources(self, notebook_id: str, label_id: str) -> list[Source]:
+        label = self._get(notebook_id, label_id)
+        bucket = self._s.sources_store.get(notebook_id, {})
+        return [bucket[source_id] for source_id in label.source_ids if source_id in bucket]
+
+    async def delete(self, notebook_id: str, label_ids: list[str]) -> None:
+        bucket = self._s.labels_store.setdefault(notebook_id, {})
+        for label_id in label_ids:
+            bucket.pop(label_id, None)
+
+    def _get(self, notebook_id: str, label_id: str) -> Label:
+        label = self._s.labels_store.get(notebook_id, {}).get(label_id)
+        if label is None:
+            from notebooklm.exceptions import LabelNotFoundError
+
+            raise LabelNotFoundError(label_id)
+        return label
+
+
+class FakeResearch:
+    def __init__(self, state: FakeClient) -> None:
+        self._s = state
+
+    async def start(
+        self, notebook_id: str, query: str, source: str = "web", mode: str = "fast"
+    ) -> ResearchStart:
+        task_id = f"research-{self._s.next_research}"
+        self._s.next_research += 1
+        task = ResearchTask(
+            task_id=task_id,
+            status=ResearchStatus.IN_PROGRESS,
+            query=query,
+            sources=(ResearchSource(url="https://example.com/research", title="Research result"),),
+            summary="Research started",
+            report="",
+        )
+        self._s.research_tasks[(notebook_id, task_id)] = task
+        return ResearchStart(
+            task_id=task_id,
+            report_id=None,
+            notebook_id=notebook_id,
+            query=query,
+            mode=mode,
+        )
+
+    async def poll(self, notebook_id: str, task_id: str | None = None) -> ResearchTask:
+        if task_id:
+            task = self._s.research_tasks.get((notebook_id, task_id))
+            if task is None:
+                return ResearchTask.not_found(task_id)
+            completed = ResearchTask(
+                task_id=task.task_id,
+                status=ResearchStatus.COMPLETED,
+                query=task.query,
+                sources=task.sources,
+                summary="Research completed",
+                report="Research report",
+            )
+            self._s.research_tasks[(notebook_id, task_id)] = completed
+            return completed
+        tasks = [
+            task
+            for (nb_id, _task_id), task in self._s.research_tasks.items()
+            if nb_id == notebook_id
+        ]
+        if not tasks:
+            return ResearchTask.empty()
+        return tasks[-1]
+
+    async def cancel(self, notebook_id: str, run_id: str) -> None:
+        self._s.research_tasks[(notebook_id, run_id)] = ResearchTask(
+            task_id=run_id,
+            status=ResearchStatus.FAILED,
+            query="",
+            summary="Cancelled",
+        )
+
+
 class FakeClient:
     """Scriptable in-memory client mirroring the namespaces the routes use."""
 
@@ -347,6 +488,8 @@ class FakeClient:
         self.sources_store: dict[str, dict[str, Source]] = {}
         self.notes_store: dict[str, dict[str, Note]] = {}
         self.artifacts_store: dict[str, dict[str, Artifact]] = {}
+        self.labels_store: dict[str, dict[str, Label]] = {}
+        self.research_tasks: dict[tuple[str, str], ResearchTask] = {}
         self.poll_states: dict[tuple[str, str], GenerationState] = {}
         self.public_shares: dict[str, bool] = {}
         self.share_view_levels: dict[str, ShareViewLevel] = {}
@@ -368,6 +511,9 @@ class FakeClient:
         self.last_ask: dict[str, Any] | None = None
         self.last_history: dict[str, Any] | None = None
         self.last_chat_config: dict[str, Any] | None = None
+        self.last_drive_add: dict[str, Any] | None = None
+        self.next_label = 1
+        self.next_research = 1
 
         self.notebooks = FakeNotebooks(self)
         self.sources = FakeSources(self)
@@ -375,6 +521,8 @@ class FakeClient:
         self.chat = FakeChat(self)
         self.artifacts = FakeArtifacts(self)
         self.sharing = FakeSharing(self)
+        self.labels = FakeLabels(self)
+        self.research = FakeResearch(self)
 
     def share_status(self, notebook_id: str) -> ShareStatus:
         is_public = self.public_shares.get(notebook_id, False)

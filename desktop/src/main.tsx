@@ -37,9 +37,13 @@ import type {
   BackendStatus,
   ChatAnswer,
   Job,
+  Label,
   Note,
   Notebook,
+  ResearchStatus,
+  SettingsState,
   Source,
+  UpdateStatus,
   VerificationRecord,
 } from "./types";
 import "./styles.css";
@@ -75,10 +79,10 @@ const views: Array<{
   { id: "artifacts", label: "Artifacts", icon: Layers3 },
   { id: "notes", label: "Notes", icon: FileText },
   { id: "verify", label: "Verify", icon: ShieldCheck },
-  { id: "research", label: "Research", icon: FlaskConical, available: false },
-  { id: "labels", label: "Labels", icon: Tags, available: false },
+  { id: "research", label: "Research", icon: FlaskConical },
+  { id: "labels", label: "Labels", icon: Tags },
   { id: "share", label: "Share", icon: Share2 },
-  { id: "settings", label: "Settings", icon: Settings, available: false },
+  { id: "settings", label: "Settings", icon: Settings },
 ];
 
 const artifactTypes = [
@@ -592,12 +596,14 @@ function ViewPanel(props: {
       return <NotesPanel {...props} />;
     case "verify":
       return <VerifyPanel {...props} />;
+    case "research":
+      return <ResearchPanel {...props} />;
+    case "labels":
+      return <LabelsPanel {...props} />;
     case "share":
       return <SharePanel {...props} />;
-    case "research":
-    case "labels":
     case "settings":
-      return <ComingSoon view={props.view} />;
+      return <SettingsPanel {...props} />;
     default:
       return <OverviewPanel {...props} />;
   }
@@ -674,15 +680,18 @@ function JobsPanel({ jobs }: { jobs: Job[] }) {
 }
 
 function SourcesPanel({ notebook, sources, upsertJob, refresh, run }: Parameters<typeof ViewPanel>[0]) {
-  const [mode, setMode] = useState<"url" | "text" | "file">("url");
+  const [mode, setMode] = useState<"url" | "text" | "file" | "drive">("url");
   const [url, setUrl] = useState("");
   const [title, setTitle] = useState("");
   const [text, setText] = useState("");
   const [file, setFile] = useState<File | null>(null);
+  const [driveId, setDriveId] = useState("");
+  const [driveMime, setDriveMime] = useState("google-doc");
   const canAdd =
     (mode === "url" && url.trim().length > 0) ||
     (mode === "text" && text.trim().length > 0) ||
-    (mode === "file" && file !== null);
+    (mode === "file" && file !== null) ||
+    (mode === "drive" && driveId.trim().length > 0);
   return (
     <section className="panel-grid">
       <div className="panel form-panel">
@@ -691,7 +700,7 @@ function SourcesPanel({ notebook, sources, upsertJob, refresh, run }: Parameters
           <button className={mode === "url" ? "active" : ""} onClick={() => setMode("url")}><Globe2 size={15} /> URL</button>
           <button className={mode === "text" ? "active" : ""} onClick={() => setMode("text")}><FileText size={15} /> Text</button>
           <button className={mode === "file" ? "active" : ""} onClick={() => setMode("file")}><FilePlus2 size={15} /> File</button>
-          <button disabled><Database size={15} /> Drive</button>
+          <button className={mode === "drive" ? "active" : ""} onClick={() => setMode("drive")}><Database size={15} /> Drive</button>
         </div>
         {mode === "url" ? (
           <label className="field"><span>URL</span><input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://..." /></label>
@@ -712,6 +721,21 @@ function SourcesPanel({ notebook, sources, upsertJob, refresh, run }: Parameters
             <span className="file-hint">{file ? `${file.name} (${Math.ceil(file.size / 1024)} KB)` : "Choose a document to upload."}</span>
           </>
         ) : null}
+        {mode === "drive" ? (
+          <>
+            <label className="field"><span>Title</span><input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Drive source" /></label>
+            <label className="field"><span>Drive file ID</span><input value={driveId} onChange={(e) => setDriveId(e.target.value)} placeholder="Google Drive file id" /></label>
+            <label className="field">
+              <span>Document type</span>
+              <select value={driveMime} onChange={(e) => setDriveMime(e.target.value)}>
+                <option value="google-doc">Google Doc</option>
+                <option value="google-slides">Google Slides</option>
+                <option value="google-sheets">Google Sheets</option>
+                <option value="pdf">PDF</option>
+              </select>
+            </label>
+          </>
+        ) : null}
         <button
           className="btn-primary"
           disabled={!canAdd}
@@ -720,7 +744,8 @@ function SourcesPanel({ notebook, sources, upsertJob, refresh, run }: Parameters
               let created: Source | null = null;
               if (mode === "url") created = await api.addUrlSource(notebook.id, url);
               else if (mode === "text") created = await api.addTextSource(notebook.id, title || "Text source", text);
-              else if (file) created = await api.addFileSource(notebook.id, file, title);
+              else if (mode === "file" && file) created = await api.addFileSource(notebook.id, file, title);
+              else if (mode === "drive") created = await api.addDriveSource(notebook.id, driveId, title || "Drive source", driveMime);
               if (created?.id) {
                 upsertJob({
                   id: created.id,
@@ -736,6 +761,7 @@ function SourcesPanel({ notebook, sources, upsertJob, refresh, run }: Parameters
               setTitle("");
               setText("");
               setFile(null);
+              setDriveId("");
               await refresh();
             })
           }
@@ -1082,6 +1108,167 @@ function VerifyPanel({
   );
 }
 
+function ResearchPanel({ notebook, run }: Parameters<typeof ViewPanel>[0]) {
+  const [query, setQuery] = useState("");
+  const [source, setSource] = useState("web");
+  const [mode, setMode] = useState("fast");
+  const [taskId, setTaskId] = useState("");
+  const [status, setStatus] = useState<ResearchStatus | null>(null);
+  const canStart = query.trim().length > 0 && !(source === "drive" && mode === "deep");
+  return (
+    <section className="panel-grid">
+      <div className="panel form-panel">
+        <div className="panel-title"><span><FlaskConical size={16} /> Research</span></div>
+        <label className="field"><span>Query</span><textarea value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Research topic or question" /></label>
+        <div className="inline-grid">
+          <label className="field"><span>Source</span><select value={source} onChange={(e) => setSource(e.target.value)}><option value="web">Web</option><option value="drive">Drive</option></select></label>
+          <label className="field"><span>Mode</span><select value={mode} onChange={(e) => setMode(e.target.value)}><option value="fast">Fast</option><option value="deep">Deep</option></select></label>
+        </div>
+        {source === "drive" && mode === "deep" ? <span className="file-hint">Deep research supports Web only.</span> : null}
+        <div className="toolbar-row">
+          <button
+            className="btn-primary"
+            disabled={!canStart}
+            onClick={() => run(async () => {
+              const result = await api.startResearch(notebook.id, { query, source, mode });
+              setTaskId(result.report_id || result.task_id);
+              setStatus(null);
+            })}
+          >
+            <Sparkles size={16} /> Start
+          </button>
+          <button
+            className="btn-secondary"
+            disabled={!taskId}
+            onClick={() => run(async () => setStatus(await api.getResearchStatus(notebook.id, taskId)))}
+          >
+            <RefreshCw size={15} /> Status
+          </button>
+          <button
+            className="btn-secondary"
+            disabled={!taskId}
+            onClick={() => run(async () => { await api.cancelResearch(notebook.id, taskId); setStatus({ notebook_id: notebook.id, task_id: taskId, kind: "cancelled", status: "cancelled", query, sources: [], summary: "Cancelled", report: "" }); })}
+          >
+            <X size={15} /> Cancel
+          </button>
+        </div>
+      </div>
+      <div className="panel list-panel">
+        <div className="panel-title"><span><FlaskConical size={16} /> Research status</span><strong className="task-count">{status?.status || (taskId ? "started" : "idle")}</strong></div>
+        {taskId ? <pre className="json-preview">{JSON.stringify(status || { task_id: taskId, status: "started" }, null, 2)}</pre> : <div className="empty-row">No research task yet</div>}
+      </div>
+    </section>
+  );
+}
+
+function LabelsPanel({ notebook, sources, run }: Parameters<typeof ViewPanel>[0]) {
+  const [labels, setLabels] = useState<Label[]>([]);
+  const [name, setName] = useState("");
+  const [emoji, setEmoji] = useState("");
+  const [selectedLabel, setSelectedLabel] = useState("");
+  const [selectedSource, setSelectedSource] = useState("");
+  const activeLabel = labels.find((label) => label.id === selectedLabel) || labels[0] || null;
+  const sourceId = selectedSource || sources[0]?.id || "";
+
+  async function loadLabels() {
+    const list = await api.listLabels(notebook.id);
+    setLabels(list);
+    if (!selectedLabel && list[0]) setSelectedLabel(list[0].id);
+  }
+
+  useEffect(() => {
+    run(loadLabels);
+  }, [notebook.id]);
+
+  return (
+    <section className="panel-grid">
+      <div className="panel form-panel">
+        <div className="panel-title"><span><Tags size={16} /> Labels</span><button className="icon-btn" onClick={() => run(loadLabels)}><RefreshCw size={16} /></button></div>
+        <label className="field"><span>Name</span><input value={name} onChange={(e) => setName(e.target.value)} placeholder="New label" /></label>
+        <label className="field"><span>Emoji</span><input value={emoji} onChange={(e) => setEmoji(e.target.value)} placeholder="Optional" /></label>
+        <button
+          className="btn-primary"
+          disabled={!name.trim()}
+          onClick={() => run(async () => {
+            const created = await api.createLabel(notebook.id, name.trim(), emoji.trim());
+            setLabels((items) => [created, ...items]);
+            setSelectedLabel(created.id);
+            setName("");
+            setEmoji("");
+          })}
+        >
+          <Plus size={16} /> Create
+        </button>
+        <button className="btn-secondary" onClick={() => run(async () => setLabels((await api.generateLabels(notebook.id, "unlabeled")).labels))}>
+          <Sparkles size={16} /> Generate
+        </button>
+        <label className="field"><span>Selected label</span><select value={activeLabel?.id || ""} onChange={(e) => setSelectedLabel(e.target.value)}>{labels.map((label) => <option key={label.id} value={label.id}>{label.emoji ? `${label.emoji} ` : ""}{label.name}</option>)}</select></label>
+        <label className="field"><span>Selected source</span><select value={sourceId} onChange={(e) => setSelectedSource(e.target.value)}>{sources.map((sourceItem) => <option key={sourceItem.id} value={sourceItem.id}>{sourceItem.title || sourceItem.id}</option>)}</select></label>
+        <div className="toolbar-row">
+          <button className="btn-secondary" disabled={!activeLabel || !name.trim()} onClick={() => run(async () => { const updated = await api.renameLabel(notebook.id, activeLabel!.id, name.trim()); setLabels((items) => items.map((item) => item.id === updated.id ? updated : item)); setName(""); })}><FileText size={15} /> Rename</button>
+          <button className="btn-secondary" disabled={!activeLabel || !emoji.trim()} onClick={() => run(async () => { const updated = await api.setLabelEmoji(notebook.id, activeLabel!.id, emoji.trim()); setLabels((items) => items.map((item) => item.id === updated.id ? updated : item)); setEmoji(""); })}><Tags size={15} /> Emoji</button>
+        </div>
+        <div className="toolbar-row">
+          <button className="btn-secondary" disabled={!activeLabel || !sourceId} onClick={() => run(async () => { const result = await api.addLabelSources(notebook.id, activeLabel!.id, [sourceId]); setLabels((items) => items.map((item) => item.id === result.label.id ? result.label : item)); })}><Plus size={15} /> Add source</button>
+          <button className="btn-secondary" disabled={!activeLabel || !sourceId} onClick={() => run(async () => { const result = await api.removeLabelSources(notebook.id, activeLabel!.id, [sourceId]); setLabels((items) => items.map((item) => item.id === result.label.id ? result.label : item)); })}><X size={15} /> Remove source</button>
+          <button className="icon-btn danger" disabled={!activeLabel} title="Delete label" onClick={() => run(async () => { if (!activeLabel) return; await api.deleteLabel(notebook.id, activeLabel.id); const next = labels.filter((label) => label.id !== activeLabel.id); setLabels(next); setSelectedLabel(next[0]?.id || ""); })}><Trash2 size={15} /></button>
+        </div>
+      </div>
+      <div className="panel list-panel">
+        <div className="panel-title"><span><Tags size={16} /> Label list</span><strong className="task-count">{labels.length}</strong></div>
+        <div className="rows">
+          {labels.length ? labels.map((label) => (
+            <button className={`data-row ${label.id === activeLabel?.id ? "active" : ""}`} key={label.id} onClick={() => setSelectedLabel(label.id)}>
+              <span className="row-dot" />
+              <div><strong>{label.emoji ? `${label.emoji} ` : ""}{label.name}</strong><span>{label.source_ids.length} source(s)</span></div>
+            </button>
+          )) : <div className="empty-row">No labels</div>}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function SettingsPanel({ run }: Parameters<typeof ViewPanel>[0]) {
+  const [settings, setSettings] = useState<SettingsState | null>(null);
+  const [language, setLanguage] = useState("en");
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
+
+  async function loadSettings() {
+    const result = await api.getSettings();
+    setSettings(result);
+    setLanguage(result.language || "en");
+  }
+
+  useEffect(() => {
+    run(loadSettings);
+  }, []);
+
+  return (
+    <section className="panel-grid">
+      <div className="panel form-panel">
+        <div className="panel-title"><span><Settings size={16} /> Settings</span><button className="icon-btn" onClick={() => run(loadSettings)}><RefreshCw size={16} /></button></div>
+        <label className="field">
+          <span>Output language</span>
+          <select value={language} onChange={(e) => setLanguage(e.target.value)}>
+            {Object.entries(settings?.languages || { en: "English" }).map(([code, label]) => <option key={code} value={code}>{label} ({code})</option>)}
+          </select>
+        </label>
+        <button className="btn-primary" onClick={() => run(async () => { await api.setLanguage(language); await loadSettings(); })}>
+          <CheckCircle2 size={16} /> Save language
+        </button>
+        <button className="btn-secondary" onClick={() => run(async () => setUpdateStatus(await api.checkUpdate()))}>
+          <RefreshCw size={16} /> Check update
+        </button>
+      </div>
+      <div className="panel list-panel">
+        <div className="panel-title"><span><Settings size={16} /> Local state</span></div>
+        <pre className="json-preview">{JSON.stringify({ settings, updateStatus }, null, 2)}</pre>
+      </div>
+    </section>
+  );
+}
+
 function SharePanel({ notebook, run }: Parameters<typeof ViewPanel>[0]) {
   const [share, setShare] = useState<Record<string, unknown> | null>(null);
   return (
@@ -1188,6 +1375,20 @@ function ListPanel({ title, icon: Icon, rows }: { title: string; icon: React.Ele
 }
 
 function VersionModal({ appInfo, onClose }: { appInfo: AppInfo | null; onClose: () => void }) {
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [message, setMessage] = useState("");
+  async function checkUpdate() {
+    setChecking(true);
+    setMessage("");
+    try {
+      setUpdateStatus(await api.checkUpdate());
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "Update check failed");
+    } finally {
+      setChecking(false);
+    }
+  }
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <section className="modal" onClick={(event) => event.stopPropagation()}>
@@ -1200,7 +1401,11 @@ function VersionModal({ appInfo, onClose }: { appInfo: AppInfo | null; onClose: 
           <span>Backend</span><strong>{appInfo?.backend?.status || "starting"}</strong>
           <span>Channel</span><strong>local</strong>
         </div>
-        <button className="btn-primary" disabled><RefreshCw size={16} /> Check update</button>
+        <button className="btn-primary" disabled={checking} onClick={checkUpdate}>
+          <RefreshCw size={16} className={checking ? "spin" : ""} /> Check update
+        </button>
+        {updateStatus ? <span className="file-hint">{updateStatus.message}</span> : null}
+        {message ? <span className="file-hint">{message}</span> : null}
       </section>
     </div>
   );

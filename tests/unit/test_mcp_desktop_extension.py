@@ -29,6 +29,7 @@ import pytest
 # This file lives at tests/unit/test_mcp_desktop_extension.py → repo root is 3 up.
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _EXT_DIR = _REPO_ROOT / "desktop-extension"
+_MCPBIGNORE = _EXT_DIR / ".mcpbignore"
 _MANIFEST = _EXT_DIR / "manifest.json"
 _RUN_SERVER = _EXT_DIR / "run_server.py"
 
@@ -93,6 +94,14 @@ def test_manifest_describes_this_package_not_the_competitor() -> None:
     blob = json.dumps(data).lower()
     assert "notebooklm-py" in blob
     assert "notebooklm-mcp-cli" not in blob
+
+
+def test_mcpbignore_excludes_local_cache_artifacts() -> None:
+    """The packaged extension should not include local Python build/cache files."""
+    patterns = _MCPBIGNORE.read_text(encoding="utf-8").splitlines()
+
+    for pattern in ("__pycache__/", "*.py[cod]", "*.mcpb"):
+        assert pattern in patterns
 
 
 # --------------------------------------------------------------------------- #

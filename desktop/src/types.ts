@@ -47,6 +47,14 @@ export type Note = {
   created_at?: string;
 };
 
+export type Label = {
+  id: string;
+  name: string;
+  notebook_id?: string | null;
+  emoji?: string | null;
+  source_ids: string[];
+};
+
 export type ChatAnswer = {
   answer: string;
   conversation_id?: string;
@@ -80,6 +88,41 @@ export type DownloadResult = {
   path?: string;
   filename?: string;
   bytes?: number;
+};
+
+export type ResearchStart = {
+  task_id: string;
+  report_id?: string | null;
+  notebook_id: string;
+  query: string;
+  mode: string;
+};
+
+export type ResearchStatus = {
+  notebook_id: string;
+  task_id: string;
+  kind: string;
+  status: string;
+  query: string;
+  sources: Array<{ url?: string; title?: string; result_type?: string | number }>;
+  summary: string;
+  report: string;
+};
+
+export type SettingsState = {
+  server: string;
+  version: string;
+  language?: string | null;
+  language_name?: string | null;
+  languages: Record<string, string>;
+};
+
+export type UpdateStatus = {
+  current_version: string;
+  latest_version: string;
+  update_available: boolean;
+  channel: string;
+  message: string;
 };
 
 export type Job = {

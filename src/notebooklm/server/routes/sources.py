@@ -32,6 +32,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Respon
 from pydantic import BaseModel
 
 from ..._app import source_add as add_core
+from ..._app import source_mutations as mutation_core
 from ..._app.serialize import to_jsonable
 from ...client import NotebookLMClient
 from .._context import get_client, get_pending
@@ -80,6 +81,14 @@ class SourceAddText(BaseModel):
 
     text: str
     title: str | None = None
+
+
+class SourceAddDrive(BaseModel):
+    """Request body for adding a Google Drive source."""
+
+    file_id: str
+    title: str = "Drive source"
+    mime_type: mutation_core.DriveMimeChoice = "google-doc"
 
 
 async def _add_source(
@@ -253,6 +262,24 @@ async def add_file(
         )
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+@router.post("/drive", status_code=201)
+async def add_drive(
+    notebook_id: str, body: SourceAddDrive, client: ClientDep, pending: PendingDep
+) -> dict[str, Any]:
+    """Add a Google Drive document source."""
+    result = await mutation_core.execute_source_add_drive(
+        client,
+        mutation_core.SourceAddDrivePlan(
+            notebook_id=notebook_id,
+            file_id=body.file_id,
+            title=body.title,
+            mime_type=body.mime_type,
+        ),
+    )
+    pending.record(notebook_id, result.source.id)
+    return to_jsonable(result.source)
 
 
 @router.delete("/{source_id}", status_code=204)

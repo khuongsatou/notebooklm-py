@@ -46,10 +46,9 @@ __all__ = [
 def mcp() -> None:
     """Wire the notebooklm-py MCP server into your MCP client(s).
 
-    The ``mcp`` group is binned into the "Command Groups" help section in
-    ``cli/grouped.py``, so the no-orphans guardrail in
-    ``tests/unit/cli/test_grouped.py`` is satisfied by that binning (no
-    ``category`` tag needed).
+    Use this group to install or update the MCP server config for supported
+    clients. After installation, restart the client so it can discover the
+    NotebookLM tools.
     """
 
 
