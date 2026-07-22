@@ -1,0 +1,10 @@
+services:
+  notebooklm-mcp:
+    container_name: notebooklm-mcp
+    networks:
+      - mtips5s-proxy
+
+networks:
+  mtips5s-proxy:
+    external: true
+    name: ${NOTEBOOKLM_PROXY_NETWORK:-mtips5s_match_app-network-mtips5s}

@@ -5,6 +5,7 @@
 .venv*/
 .worktrees/
 **/__pycache__/
+__pycache__/
 *.py[cod]
 .pytest_cache/
 .mypy_cache/
@@ -16,6 +17,13 @@ build/
 *.egg-info/
 .sisyphus/
 node_modules/
+course/
+desktop/
+desktop-extension/
+prompts/
+refer/
+tests/
+workflows/
 # never copy deploy secrets into the build
 deploy/profile/
 deploy/.env

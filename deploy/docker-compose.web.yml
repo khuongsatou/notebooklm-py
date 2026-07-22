@@ -1,0 +1,34 @@
+services:
+  notebooklm-web-api:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    container_name: notebooklm-web-api
+    restart: unless-stopped
+    user: "${NOTEBOOKLM_UID:-1000}:${NOTEBOOKLM_GID:-1000}"
+    command: ["notebooklm-server", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      NOTEBOOKLM_SERVER_TOKEN: ${NOTEBOOKLM_SERVER_TOKEN:-}
+      NOTEBOOKLM_SERVER_ALLOW_EXTERNAL_BIND: "1"
+      NOTEBOOKLM_HOME: /data
+      NOTEBOOKLM_PROFILE: server
+      HOME: /data/profiles/server
+    volumes:
+      - "${NOTEBOOKLM_PROFILE_DIR:-${HOME}/.notebooklm/profiles/default}:/data/profiles/server:rw"
+    networks:
+      - mtips5s-proxy
+    healthcheck:
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+      test:
+        - CMD
+        - python
+        - -c
+        - "import socket,sys; s=socket.socket(); s.settimeout(2); sys.exit(0 if s.connect_ex(('127.0.0.1',8000))==0 else 1)"
+
+networks:
+  mtips5s-proxy:
+    external: true
+    name: ${NOTEBOOKLM_PROXY_NETWORK:-mtips5s_match_app-network-mtips5s}

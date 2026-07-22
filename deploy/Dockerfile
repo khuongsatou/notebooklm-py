@@ -22,7 +22,7 @@ COPY . /src
 RUN if [ -n "$NOTEBOOKLM_SPEC" ]; then \
         pip install --no-cache-dir "$NOTEBOOKLM_SPEC"; \
     else \
-        pip install --no-cache-dir "/src[mcp,headless]"; \
+        pip install --no-cache-dir "/src[mcp,headless,server]"; \
     fi
 
 # Run as a non-root user; the mounted profile dir must be writable by this uid

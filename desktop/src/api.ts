@@ -15,6 +15,8 @@ import type {
   UpdateStatus,
 } from "./types";
 
+const browserApiBase = (import.meta.env.VITE_NOTEBOOKLM_API_BASE || "").replace(/\/$/, "");
+
 async function request<T>(
   path: string,
   options: {
@@ -26,18 +28,75 @@ async function request<T>(
     suggestedName?: string;
   } = {},
 ) {
-  if (!window.notebooklmDesktop) {
-    throw new Error("Open this renderer through Electron to connect the local backend");
+  if (window.notebooklmDesktop) {
+    return window.notebooklmDesktop.backendRequest<T>({
+      path,
+      method: options.method,
+      body: options.body,
+      form: options.form,
+      file: options.file,
+      download: options.download,
+      suggestedName: options.suggestedName,
+    });
   }
-  return window.notebooklmDesktop.backendRequest<T>({
-    path,
-    method: options.method,
-    body: options.body,
-    form: options.form,
-    file: options.file,
-    download: options.download,
-    suggestedName: options.suggestedName,
-  });
+
+  const url = `${browserApiBase}${path}`;
+  const init: RequestInit = {
+    method: options.method || "GET",
+  };
+
+  if (options.file) {
+    const form = new FormData();
+    const bytes = options.file.data;
+    const blob = new Blob([bytes], {
+      type: options.file.type || "application/octet-stream",
+    });
+    form.append("file", blob, options.file.name || "upload");
+    for (const [key, value] of Object.entries(options.form || {})) {
+      if (value !== undefined && value !== null && value !== "") {
+        form.append(key, String(value));
+      }
+    }
+    init.body = form;
+  } else if (options.body !== undefined) {
+    init.headers = { "Content-Type": "application/json" };
+    init.body = JSON.stringify(options.body);
+  }
+
+  const response = await fetch(url, init);
+  const contentType = response.headers.get("content-type") || "";
+  if (!response.ok) {
+    const errorBody = contentType.includes("application/json")
+      ? await response.json()
+      : await response.text();
+    const detail =
+      typeof errorBody === "object" && errorBody && "error" in errorBody
+        ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (errorBody as any).error?.message
+        : errorBody;
+    throw new Error(typeof detail === "string" ? detail : `Request failed: ${path}`);
+  }
+
+  if (options.download) {
+    const blob = await response.blob();
+    const filename =
+      options.suggestedName ||
+      response.headers.get("content-disposition")?.match(/filename="?([^"]+)"?/)?.[1] ||
+      "download.bin";
+    const objectUrl = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = objectUrl;
+    anchor.download = filename;
+    anchor.click();
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 10_000);
+    return {
+      canceled: false,
+      filename,
+      bytes: blob.size,
+    } as T;
+  }
+
+  return (contentType.includes("application/json") ? await response.json() : await response.text()) as T;
 }
 
 export const api = {

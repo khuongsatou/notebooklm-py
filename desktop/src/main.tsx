@@ -144,11 +144,34 @@ function App() {
 
   useEffect(() => {
     if (!window.notebooklmDesktop) {
-      setBackend({
-        status: "error",
-        message: "Open with Electron to start the local backend bridge.",
-      });
-      return undefined;
+      let cancelled = false;
+      const syncWebApp = async () => {
+        try {
+          const info = await api.status();
+          if (cancelled) return;
+          setAppInfo({
+            name: "notebooklm-pro-web",
+            version: info.version,
+            backend: {
+              baseUrl: window.location.origin,
+              port: Number(window.location.port || "443") || 443,
+              status: "ready",
+            },
+          });
+          setBackend({ status: "ready", port: Number(window.location.port || "443") || 443 });
+          await refreshNotebooks();
+        } catch (err) {
+          if (cancelled) return;
+          setBackend({
+            status: "error",
+            message: err instanceof Error ? err.message : "Backend unavailable",
+          });
+        }
+      };
+      syncWebApp().catch(() => undefined);
+      return () => {
+        cancelled = true;
+      };
     }
     let didRefreshReady = false;
     const syncAppInfo = async () => {
