@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   Activity,
@@ -153,6 +153,14 @@ function openNotebookInGoogle(notebookId: string) {
 
 type ExtensionStatus = "idle" | "connecting" | "connected" | "syncing" | "error";
 
+type LogEntry = {
+  id: string;
+  timestamp: number;
+  level: "info" | "success" | "warning" | "error";
+  source: "backend" | "extension" | "local" | "ui";
+  message: string;
+};
+
 function requestDriveDownCookies(
   type: "connect" | "sync-now",
 ): Promise<DriveDownCookiesResponse> {
@@ -268,6 +276,18 @@ function App() {
   const [vpsConnection, setVpsConnection] = useState<VpsConnectionStatus | null>(null);
   const [extensionStatus, setExtensionStatus] = useState<ExtensionStatus>("idle");
   const [extensionMessage, setExtensionMessage] = useState("Not connected");
+  const [connectDialogOpen, setConnectDialogOpen] = useState(false);
+  const [logManagerOpen, setLogManagerOpen] = useState(false);
+  const [logs, setLogs] = useState<LogEntry[]>(() => [
+    {
+      id: `log-${Date.now()}-init`,
+      timestamp: Date.now(),
+      level: "info",
+      source: "ui",
+      message: "Log manager initialized",
+    },
+  ]);
+  const lastBackendStatusLog = useRef("");
   const [notebookSearch, setNotebookSearch] = useState("");
   const [notebookDialog, setNotebookDialog] = useState<NotebookDialogState | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Notebook | null>(null);
@@ -296,6 +316,20 @@ function App() {
         ? "bad"
         : "";
   const vpsPillClass = vpsConnection?.connected ? "ok" : vpsConnection ? "bad" : "";
+
+  const appendLog = useCallback(
+    (entry: Omit<LogEntry, "id" | "timestamp">) => {
+      setLogs((items) => [
+        {
+          ...entry,
+          id: `log-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          timestamp: Date.now(),
+        },
+        ...items,
+      ].slice(0, 300));
+    },
+    [],
+  );
 
   useEffect(
     () => setAuthenticationRecoveryHandler(canUseDriveExtension ? syncCookiesFromExtension : null),
@@ -369,6 +403,15 @@ function App() {
       setAppInfo(info);
       if (info.backend) {
         setBackend({ status: info.backend.status as BackendStatus["status"], port: info.backend.port });
+        const statusKey = `${info.backend.status}:${info.backend.port || ""}`;
+        if (lastBackendStatusLog.current !== statusKey) {
+          lastBackendStatusLog.current = statusKey;
+          appendLog({
+            level: info.backend.status === "ready" ? "success" : "info",
+            source: "backend",
+            message: `Backend status: ${info.backend.status}${info.backend.port ? ` on ${info.backend.port}` : ""}`,
+          });
+        }
         if (info.backend.status === "ready" && !didRefreshReady) {
           didRefreshReady = true;
           refreshNotebooks();
@@ -383,8 +426,22 @@ function App() {
       // Backend stdout/stderr is useful diagnostics, but a late log line must
       // not downgrade an already healthy backend back to the non-ready state.
       if (payload.status === "log") {
+        appendLog({
+          level: payload.stream === "stderr" ? "warning" : "info",
+          source: "backend",
+          message: `[${payload.stream || "log"}] ${payload.message || ""}`,
+        });
         setBackend((current) => (current.status === "ready" ? current : payload));
         return;
+      }
+      const statusKey = `${payload.status}:${payload.port || ""}:${payload.message || ""}`;
+      if (lastBackendStatusLog.current !== statusKey) {
+        lastBackendStatusLog.current = statusKey;
+        appendLog({
+          level: payload.status === "ready" ? "success" : payload.status === "error" ? "error" : "info",
+          source: "backend",
+          message: `Backend ${payload.status}${payload.message ? `: ${payload.message}` : ""}`,
+        });
       }
       setBackend(payload);
       if (payload.status === "ready") {
@@ -399,7 +456,7 @@ function App() {
       window.clearInterval(poll);
       unsubscribe();
     };
-  }, [browserSessionReady]);
+  }, [browserSessionReady, appendLog]);
 
   useEffect(() => {
     if (activeNotebookId) {
@@ -428,7 +485,9 @@ function App() {
       await action();
       return true;
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Unknown error");
+      const message = err instanceof Error ? err.message : "Unknown error";
+      setError(message);
+      appendLog({ level: "error", source: "ui", message });
       return false;
     } finally {
       setBusy(false);
@@ -436,6 +495,7 @@ function App() {
   }
 
   async function refreshNotebooks() {
+    appendLog({ level: "info", source: "ui", message: "Refreshing notebooks" });
     const ok = await run(async () => {
       await api.status();
       const list = await api.listNotebooks();
@@ -564,16 +624,19 @@ function App() {
     setExtensionStatus("connecting");
     setExtensionMessage("Checking...");
     setError("");
+    appendLog({ level: "info", source: "extension", message: "Checking Drive Down Cookies connection" });
     try {
       const result = await requestDriveDownCookies("connect");
       setExtensionStatus("connected");
-      setExtensionMessage(
-        result.extension_version ? `v${result.extension_version}` : result.status || "Connected",
-      );
+      const message = result.extension_version ? `v${result.extension_version}` : result.status || "Connected";
+      setExtensionMessage(message);
+      appendLog({ level: "success", source: "extension", message: `Extension connected: ${message}` });
     } catch (err) {
+      const message = err instanceof Error ? err.message : "Extension connection failed";
       setExtensionStatus("error");
       setExtensionMessage("Connection failed");
-      setError(err instanceof Error ? err.message : "Extension connection failed");
+      setError(message);
+      appendLog({ level: "error", source: "extension", message });
     }
   }
 
@@ -582,7 +645,9 @@ function App() {
       await syncCookiesFromExtension();
       await refreshNotebooks();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not get cookies from extension");
+      const message = err instanceof Error ? err.message : "Could not get cookies from extension";
+      setError(message);
+      appendLog({ level: "error", source: "extension", message });
     }
   }
 
@@ -590,6 +655,7 @@ function App() {
     setExtensionStatus("syncing");
     setExtensionMessage("Getting cookies...");
     setError("");
+    appendLog({ level: "info", source: "extension", message: "Syncing cookies from extension" });
     try {
       const result = await requestDriveDownCookies("sync-now");
       if (
@@ -603,10 +669,17 @@ function App() {
         );
       }
       setExtensionStatus("connected");
-      setExtensionMessage(`${result.persisted_count} cookies verified from local Chrome`);
+      const message = `${result.persisted_count} cookies verified from local Chrome`;
+      setExtensionMessage(message);
+      appendLog({ level: "success", source: "extension", message });
     } catch (err) {
       setExtensionStatus("error");
       setExtensionMessage("Cookie sync failed");
+      appendLog({
+        level: "error",
+        source: "extension",
+        message: err instanceof Error ? err.message : "Cookie sync failed",
+      });
       throw err;
     }
   }
@@ -616,6 +689,7 @@ function App() {
     if (!restartBackend) return;
     setRestartingBackend(true);
     setError("");
+    appendLog({ level: "info", source: "backend", message: "Restarting backend" });
     try {
       const info = await restartBackend();
       setAppInfo(info);
@@ -626,8 +700,11 @@ function App() {
         });
       }
       await refreshNotebooks();
+      appendLog({ level: "success", source: "backend", message: "Backend restart requested" });
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Backend restart failed");
+      const message = err instanceof Error ? err.message : "Backend restart failed";
+      setError(message);
+      appendLog({ level: "error", source: "backend", message });
     } finally {
       setRestartingBackend(false);
     }
@@ -637,6 +714,7 @@ function App() {
     setLoginRunning(true);
     setLoginMessage("Running notebooklm login...");
     setError("");
+    appendLog({ level: "info", source: "backend", message: "Running notebooklm login command" });
     try {
       const result = await api.runLogin();
       const nextMessage =
@@ -649,7 +727,9 @@ function App() {
       if (!result.ok) {
         const detail = result.stderr.trim() || result.stdout.trim() || nextMessage;
         setError(detail);
+        appendLog({ level: "error", source: "backend", message: detail });
       } else {
+        appendLog({ level: "success", source: "backend", message: "NotebookLM login command completed" });
         await refreshNotebooks();
       }
       return result;
@@ -657,6 +737,7 @@ function App() {
       const message = err instanceof Error ? err.message : "Could not run notebooklm login";
       setLoginMessage("Login command failed");
       setError(message);
+      appendLog({ level: "error", source: "backend", message });
       throw err;
     } finally {
       setLoginRunning(false);
@@ -698,18 +779,24 @@ function App() {
     setLocalResetRunning(true);
     setLocalSyncMessage("Resetting local login...");
     setError("");
+    appendLog({ level: "info", source: "local", message: "Resetting local NotebookLM login" });
     try {
       const result = await resetLogin();
       setVpsConnection(null);
       if (!result.ok) {
+        const message = localResetError(result);
         setLocalSyncMessage(result.status || "Reset failed");
-        setError(localResetError(result));
+        setError(message);
+        appendLog({ level: "error", source: "local", message });
         return;
       }
       setLocalSyncMessage("Local login reset");
+      appendLog({ level: "success", source: "local", message: "Local login reset" });
     } catch (err) {
+      const message = err instanceof Error ? err.message : "Local login reset failed";
       setLocalSyncMessage("Reset failed");
-      setError(err instanceof Error ? err.message : "Local login reset failed");
+      setError(message);
+      appendLog({ level: "error", source: "local", message });
     } finally {
       setLocalResetRunning(false);
     }
@@ -724,12 +811,15 @@ function App() {
     setLocalLoginRunning(true);
     setLocalSyncMessage("Running local login...");
     setError("");
+    appendLog({ level: "info", source: "local", message: "Running local login and VPS sync" });
     try {
       const result = await localLoginAndSync();
       setVpsConnection(result.connected || null);
       if (!result.ok) {
+        const message = localSyncError(result);
         setLocalSyncMessage(result.status || "Sync failed");
-        setError(localSyncError(result));
+        setError(message);
+        appendLog({ level: "error", source: "local", message });
         return;
       }
       const count =
@@ -737,9 +827,12 @@ function App() {
           ? `${result.connected.notebook_count} notebooks`
           : "verified";
       setLocalSyncMessage(`VPS connected: ${count}`);
+      appendLog({ level: "success", source: "local", message: `VPS connected: ${count}` });
     } catch (err) {
+      const message = err instanceof Error ? err.message : "Local login sync failed";
       setLocalSyncMessage("Sync failed");
-      setError(err instanceof Error ? err.message : "Local login sync failed");
+      setError(message);
+      appendLog({ level: "error", source: "local", message });
     } finally {
       setLocalLoginRunning(false);
     }
@@ -753,18 +846,22 @@ function App() {
     }
     setVpsChecking(true);
     setError("");
+    appendLog({ level: "info", source: "local", message: "Checking VPS connection" });
     try {
       const result = await checkConnected();
       setVpsConnection(result);
-      setLocalSyncMessage(
+      const message =
         result.connected
           ? `VPS connected${typeof result.notebook_count === "number" ? `: ${result.notebook_count} notebooks` : ""}`
-          : result.error || result.status || "VPS not connected",
-      );
+          : result.error || result.status || "VPS not connected";
+      setLocalSyncMessage(message);
+      appendLog({ level: result.connected ? "success" : "warning", source: "local", message });
       if (!result.connected && result.error) setError(result.error);
     } catch (err) {
+      const message = err instanceof Error ? err.message : "VPS connected check failed";
       setLocalSyncMessage("Check failed");
-      setError(err instanceof Error ? err.message : "VPS connected check failed");
+      setError(message);
+      appendLog({ level: "error", source: "local", message });
     } finally {
       setVpsChecking(false);
     }
@@ -838,7 +935,7 @@ function App() {
             <>
               <button
                 className="icon-btn connect-btn"
-                onClick={connectNotebookLM}
+                onClick={() => setConnectDialogOpen(true)}
                 disabled={extensionStatus === "connecting"}
                 title="Connect Drive Down Cookies"
                 aria-label="Connect Drive Down Cookies"
@@ -1070,9 +1167,29 @@ function App() {
         </section>
       </section>
 
+      <LogManager
+        open={logManagerOpen}
+        logs={logs}
+        onToggle={() => setLogManagerOpen((value) => !value)}
+        onClear={() => {
+          setLogs([]);
+          appendLog({ level: "info", source: "ui", message: "Logs cleared" });
+        }}
+      />
+
       <button className="version-pill" onClick={() => setVersionOpen(true)}>
         Version {appInfo?.version || "0.1.0"}
       </button>
+      {connectDialogOpen ? (
+        <ConnectLoginModal
+          status={extensionStatus}
+          message={extensionMessage}
+          onClose={() => setConnectDialogOpen(false)}
+          onOpenNotebookLM={(url) => window.open(url, "_blank", "noopener,noreferrer")}
+          onCheck={connectNotebookLM}
+          onSync={getCookiesFromExtension}
+        />
+      ) : null}
       {versionOpen ? <VersionModal appInfo={appInfo} onClose={() => setVersionOpen(false)} /> : null}
       {notebookDialog ? (
         <NotebookEditorModal
@@ -2581,6 +2698,143 @@ function VersionModal({ appInfo, onClose }: { appInfo: AppInfo | null; onClose: 
         </button>
         {updateStatus ? <span className="file-hint">{updateStatus.message}</span> : null}
         {message ? <span className="file-hint">{message}</span> : null}
+      </section>
+    </div>
+  );
+}
+
+function LogManager({
+  open,
+  logs,
+  onToggle,
+  onClear,
+}: {
+  open: boolean;
+  logs: LogEntry[];
+  onToggle: () => void;
+  onClear: () => void;
+}) {
+  const latest = logs[0];
+  return (
+    <section className={`log-manager ${open ? "open" : "collapsed"}`} aria-label="Log manager">
+      <button
+        className="log-manager-toggle"
+        type="button"
+        onClick={onToggle}
+        aria-expanded={open}
+      >
+        <Activity size={15} />
+        <span>Log manager</span>
+        <strong>{logs.length}</strong>
+        <ChevronDown size={15} className={open ? "open" : ""} />
+      </button>
+      {open ? (
+        <div className="log-manager-body">
+          <div className="log-manager-head">
+            <span>{latest ? latest.message : "No logs yet"}</span>
+            <button className="icon-btn" type="button" title="Clear logs" onClick={onClear}>
+              <Trash2 size={15} />
+            </button>
+          </div>
+          <div className="log-list" role="log" aria-live="polite">
+            {logs.length ? logs.map((item) => (
+              <article className={`log-row ${item.level}`} key={item.id}>
+                <time>{new Date(item.timestamp).toLocaleTimeString()}</time>
+                <span>{item.source}</span>
+                <p>{item.message}</p>
+              </article>
+            )) : <div className="empty-row">No logs captured</div>}
+          </div>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function ConnectLoginModal({
+  status,
+  message,
+  onClose,
+  onOpenNotebookLM,
+  onCheck,
+  onSync,
+}: {
+  status: ExtensionStatus;
+  message: string;
+  onClose: () => void;
+  onOpenNotebookLM: (url: string) => void;
+  onCheck: () => Promise<void>;
+  onSync: () => Promise<void>;
+}) {
+  const [verificationUrl, setVerificationUrl] = useState(googleNotebookLMBaseUrl);
+  const [verificationUrlError, setVerificationUrlError] = useState("");
+  const checking = status === "connecting";
+  const syncing = status === "syncing";
+  const connected = status === "connected";
+
+  function openVerificationLink() {
+    const rawUrl = verificationUrl.trim() || googleNotebookLMBaseUrl;
+    try {
+      const parsed = new URL(rawUrl);
+      if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+        throw new Error("Link phải bắt đầu bằng http:// hoặc https://");
+      }
+      setVerificationUrlError("");
+      onOpenNotebookLM(parsed.href);
+    } catch (err) {
+      setVerificationUrlError(err instanceof Error ? err.message : "Link xác thực không hợp lệ.");
+    }
+  }
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <section
+        className="modal"
+        role="dialog"
+        aria-modal="true"
+        aria-label="NotebookLM login"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="panel-title">
+          <span><LogIn size={16} /> NotebookLM login</span>
+          <button className="icon-btn" title="Close login dialog" onClick={onClose}>
+            <X size={16} />
+          </button>
+        </div>
+        <p className="modal-copy">
+          Mở NotebookLM trong Chrome, đăng nhập Google nếu được yêu cầu, rồi đồng bộ cookie về VPS.
+        </p>
+        <label className="field">
+          <span>Link xác thực</span>
+          <input
+            value={verificationUrl}
+            onChange={(event) => {
+              setVerificationUrl(event.target.value);
+              if (verificationUrlError) setVerificationUrlError("");
+            }}
+            placeholder="https://notebooklm.google.com/"
+            type="url"
+          />
+        </label>
+        {verificationUrlError ? <div className="banner bad">{verificationUrlError}</div> : null}
+        <span className={`status-pill extension-pill ${connected ? "ok" : status === "error" ? "bad" : ""}`}>
+          <Link2 size={14} />
+          <span>Extension</span>
+          <strong>{message}</strong>
+        </span>
+        <div className="modal-actions">
+          <button className="btn-secondary" type="button" onClick={openVerificationLink}>
+            <ExternalLink size={16} /> Mở link xác thực
+          </button>
+          <button className="btn-secondary" type="button" disabled={checking || syncing} onClick={() => onCheck()}>
+            {checking ? <Loader2 size={16} className="spin" /> : <Link2 size={16} />}
+            Kiểm tra
+          </button>
+          <button className="btn-primary" type="button" disabled={checking || syncing} onClick={() => onSync()}>
+            {syncing ? <Loader2 size={16} className="spin" /> : <DownloadCloud size={16} />}
+            Đồng bộ cookie
+          </button>
+        </div>
       </section>
     </div>
   );

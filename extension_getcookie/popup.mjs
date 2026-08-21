@@ -24,6 +24,7 @@ const verifyOauthLink = document.querySelector('#verifyOauthLink');
 const serverEndpointInput = document.querySelector('#serverEndpoint');
 const serverTokenInput = document.querySelector('#serverToken');
 const sendNowButton = document.querySelector('#sendNow');
+const loginNotebookLmButton = document.querySelector('#loginNotebookLM');
 const clearSyncDataButton = document.querySelector('#clearSyncData');
 
 const STORAGE_KEYS = {
@@ -519,6 +520,19 @@ sendNowButton.addEventListener('click', async () => {
       );
     } finally {
       sendNowButton.disabled = false;
+    }
+  });
+});
+
+loginNotebookLmButton.addEventListener('click', async () => {
+  await runPopupAction(async () => {
+    loginNotebookLmButton.disabled = true;
+    try {
+      setSyncStatus('Opening NotebookLM login...', 'neutral');
+      await ensureNotebookLmTab();
+      setSyncStatus('Login tab opened. Sign in, then return here and send cookies.', 'warning');
+    } finally {
+      loginNotebookLmButton.disabled = false;
     }
   });
 });

@@ -56,6 +56,12 @@
     color: #f0f0f0;
   }
 
+  .login-sync-btn {
+    background: #202947;
+    border-color: #5267b8;
+    color: #c7d2ff;
+  }
+
   .clear-sync-btn {
     background: #3a1f1f;
     border-color: #7a3333;

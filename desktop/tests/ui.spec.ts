@@ -806,15 +806,24 @@ test("remaining MVP buttons produce visible state changes or backend calls", asy
   await expect(page.getByText("A compact workspace for sources")).toBeVisible();
 
   await page.getByRole("button", { name: "Connect Drive Down Cookies" }).click();
+  const loginDialog = page.getByRole("dialog", { name: "NotebookLM login" });
+  await expect(loginDialog).toBeVisible();
+  await loginDialog.getByLabel("Link xác thực").fill("https://notebooklm.google.com/notebook/verify-test");
+  await loginDialog.getByRole("button", { name: "Mở link xác thực" }).click();
+  await expect.poll(() =>
+    page.evaluate(() => (window as typeof window & { __openedExternal?: string[] }).__openedExternal),
+  ).toContain("https://notebooklm.google.com/notebook/verify-test");
+  await loginDialog.getByRole("button", { name: "Kiểm tra" }).click();
   await expect.poll(() =>
     page.evaluate(() => (window as typeof window & { __extensionMessages?: string[] }).__extensionMessages),
   ).toContain("connect");
   await expect(page.getByTitle("Drive Down Cookies: v0.7.3")).toBeVisible();
-  await page.getByRole("button", { name: "Get cookies from extension" }).click();
+  await loginDialog.getByRole("button", { name: "Đồng bộ cookie" }).click();
   await expect.poll(() =>
     page.evaluate(() => (window as typeof window & { __extensionMessages?: string[] }).__extensionMessages),
   ).toContain("sync-now");
   await expect(page.getByTitle("Drive Down Cookies: 12 cookies verified from local Chrome")).toBeVisible();
+  await loginDialog.getByRole("button", { name: "Close login dialog" }).click();
   await page.getByRole("button", { name: "Restart backend" }).click();
   await expect.poll(() =>
     page.evaluate(() => (window as typeof window & { __restartBackendCalls?: number }).__restartBackendCalls),
@@ -938,6 +947,20 @@ test("source, chat, studio, notes, and share flows keep panels stable", async ({
 
   await expectNoHorizontalOverflow(page);
   await expectNoVisibleOverlap(page);
+});
+
+test("log manager expands, collapses and clears captured logs", async ({ page }) => {
+  const toggle = page.getByRole("button", { name: /Log manager/ });
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-expanded", "true");
+  await expect(page.getByRole("log")).toContainText("Log manager initialized");
+
+  await page.getByTitle("Clear logs").click();
+  await expect(page.getByRole("log")).toContainText("Logs cleared");
+
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
 });
 
 test("browser-only password gate is readable when preload bridge is missing", async ({ browser }) => {

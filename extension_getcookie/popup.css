@@ -166,6 +166,19 @@ main {
   font-weight: 700;
 }
 
+.login-sync-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 2.35rem;
+  border: 1px solid #b8c5f1;
+  border-radius: 8px;
+  background: #f2f5ff;
+  color: #3153ee;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
 .clear-sync-btn {
   display: flex;
   align-items: center;
@@ -180,6 +193,7 @@ main {
 }
 
 .manual-sync-btn .button-text,
+.login-sync-btn .button-text,
 .clear-sync-btn .button-text {
   display: flex;
   align-items: center;
@@ -187,6 +201,7 @@ main {
 }
 
 .manual-sync-btn:disabled,
+.login-sync-btn:disabled,
 .clear-sync-btn:disabled {
   cursor: wait;
   opacity: 0.65;

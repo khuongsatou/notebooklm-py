@@ -369,9 +369,14 @@ test("button audit: every enabled MVP control has backend or local-state evidenc
   });
   await expectLocal(page, audit, "Top bar", "Connect extension", "Drive Down Cookies connect handshake", async () => {
     await page.getByRole("button", { name: "Connect Drive Down Cookies" }).click();
+    const loginDialog = page.getByRole("dialog", { name: "NotebookLM login" });
+    await expect(loginDialog).toBeVisible();
+    await expect(loginDialog.getByLabel("Link xác thực")).toBeVisible();
+    await loginDialog.getByRole("button", { name: "Kiểm tra" }).click();
     await expect.poll(() =>
       page.evaluate(() => (window as typeof window & { __extensionMessages?: string[] }).__extensionMessages),
     ).toContain("connect");
+    await loginDialog.getByRole("button", { name: "Close login dialog" }).click();
   });
   await expectBackend(
     page,

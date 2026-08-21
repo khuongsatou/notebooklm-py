@@ -765,6 +765,125 @@ textarea { min-height: 118px; resize: vertical; padding: 10px 11px; }
   font-weight: 700;
 }
 
+.log-manager {
+  position: fixed;
+  left: 20px;
+  bottom: 16px;
+  z-index: 21;
+  width: min(520px, calc(100vw - 40px));
+  border: 1px solid rgba(51, 51, 51, 0.92);
+  border-radius: 10px;
+  background: rgba(31, 31, 30, 0.96);
+  box-shadow: 0 24px 80px -44px rgba(0, 0, 0, 0.82);
+  overflow: hidden;
+}
+
+.log-manager.collapsed {
+  width: min(280px, calc(100vw - 40px));
+}
+
+.log-manager-toggle {
+  width: 100%;
+  min-height: 38px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 9px;
+  border: 0;
+  padding: 0 12px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+}
+
+.log-manager-toggle span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.log-manager-toggle strong {
+  min-width: 26px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(229, 106, 74, 0.16);
+  color: var(--brand-soft);
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+  font-size: 11px;
+  text-align: center;
+}
+
+.log-manager-toggle svg:last-child {
+  transition: transform 160ms ease;
+}
+
+.log-manager-toggle svg:last-child.open {
+  transform: rotate(180deg);
+}
+
+.log-manager-body {
+  border-top: 1px solid var(--border);
+}
+
+.log-manager-head {
+  min-height: 42px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px 8px 12px;
+}
+
+.log-manager-head > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.log-list {
+  max-height: 260px;
+  overflow: auto;
+  border-top: 1px solid rgba(51, 51, 51, 0.72);
+  background: #181818;
+}
+
+.log-row {
+  display: grid;
+  grid-template-columns: 78px 72px minmax(0, 1fr);
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid rgba(51, 51, 51, 0.64);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.log-row time,
+.log-row span {
+  color: var(--subtle);
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+.log-row span {
+  text-transform: uppercase;
+}
+
+.log-row p {
+  min-width: 0;
+  margin: 0;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.log-row.success p { color: #bbf7d0; }
+.log-row.warning p { color: #fde68a; }
+.log-row.error p { color: #fecaca; }
+
 .modal-backdrop {
   position: fixed;
   inset: 0;
@@ -1325,6 +1444,17 @@ textarea { min-height: 118px; resize: vertical; padding: 10px 11px; }
     position: static;
     display: block;
     margin: 14px 0 0 auto;
+  }
+  .log-manager {
+    position: static;
+    width: 100%;
+    margin-top: 14px;
+  }
+  .log-manager.collapsed {
+    width: 100%;
+  }
+  .log-row {
+    grid-template-columns: 72px 64px minmax(0, 1fr);
   }
 }
 
