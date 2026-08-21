@@ -200,6 +200,7 @@ TOOL_COVERAGE: dict[str, str] = {
     "notebook_rename": "TestMcpLifecycle.test_create_describe_rename_delete",
     "notebook_delete": "TestMcpLifecycle.test_create_describe_rename_delete",
     "server_info": "TestMcpReadOnly.test_server_info",
+    "auth_relogin": "tests/unit/mcp/test_meta.py (button/action; no live reauth mutation)",
     # sources
     "source_add": "TestMcpSources.test_source_roundtrip / test_source_add_text",
     "source_list": "TestMcpSources.test_source_roundtrip",

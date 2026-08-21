@@ -44,6 +44,17 @@ test.beforeEach(async ({ page }) => {
         labels: [{ id: "label-1", name: "Architecture", emoji: "🏷️", source_ids: ["src-1"] }],
         researchTaskId: "research-1",
         language: "en",
+        mcpKeys: [] as Array<{
+          id: string;
+          name: string;
+          prefix: string;
+          status: "active" | "revoked";
+          createdAt: string;
+          createdBy: string;
+          lastUsedAt: string;
+          revokedAt: string;
+          legacy: boolean;
+        }>,
       };
       Object.defineProperty(navigator, "clipboard", {
         configurable: true,
@@ -53,14 +64,68 @@ test.beforeEach(async ({ page }) => {
           },
         },
       });
-      (window as typeof window & { __backendRequests?: string[] }).__backendRequests = [];
+      (window as typeof window & { __openedExternal?: string[] }).__openedExternal = [];
+      window.open = ((url?: string | URL) => {
+        (window as typeof window & { __openedExternal?: string[] }).__openedExternal?.push(
+          String(url),
+        );
+        return null;
+      }) as typeof window.open;
+      (window as typeof window & { __extensionMessages?: string[] }).__extensionMessages = [];
+      Object.defineProperty(window, "chrome", {
+        configurable: true,
+        value: {
+          runtime: {
+            sendMessage(
+              _extensionId: string,
+              message: { type?: string },
+              callback: (response: Record<string, unknown>) => void,
+            ) {
+              (window as typeof window & { __extensionMessages?: string[] }).__extensionMessages?.push(
+                message.type || "unknown",
+              );
+              callback(
+                message.type === "connect"
+                  ? { ok: true, status: "ready", extension_version: "0.7.3" }
+                  : {
+                      ok: true,
+                      status: "ok",
+                      cookie_count: 12,
+                      received_count: 12,
+                      persisted_count: 12,
+                      client_reloaded: true,
+                      auth_verified: true,
+                    },
+              );
+            },
+          },
+        },
+      });
+      (window as typeof window & { __backendRequests?: string[]; __restartBackendCalls?: number }).__backendRequests = [];
+      (window as typeof window & { __backendRequests?: string[]; __restartBackendCalls?: number }).__restartBackendCalls = 0;
+      (window as typeof window & {
+        __emitBackendStatus?: (payload: { status: string; message?: string }) => void;
+      }).__emitBackendStatus = (payload) => {
+        for (const listener of listeners) listener(payload);
+      };
+
+      const backendInfo = { baseUrl: "http://127.0.0.1:5173", port: 5173, status: "ready" as const };
 
       window.notebooklmDesktop = {
         async getAppInfo() {
           return {
             name: "notebooklm-pro-desktop",
             version: "0.1.0",
-            backend: { baseUrl: "http://127.0.0.1:5173", port: 5173, status: "ready" },
+            backend: backendInfo,
+          };
+        },
+        async restartBackend() {
+          (window as typeof window & { __restartBackendCalls?: number }).__restartBackendCalls =
+            ((window as typeof window & { __restartBackendCalls?: number }).__restartBackendCalls || 0) + 1;
+          return {
+            name: "notebooklm-pro-desktop",
+            version: "0.1.0",
+            backend: backendInfo,
           };
         },
         async backendRequest(request) {
@@ -277,6 +342,97 @@ test.beforeEach(async ({ page }) => {
               mode: String((request.body as { mode?: string })?.mode || "fast"),
             };
           }
+          if (path === "/v1/mcp/config") {
+            return {
+              ok: true,
+              product: { name: "NotebookLM Pro", slug: "notebooklm-pro" },
+              endpoint: "https://notebooklm.example.test/mcp",
+              transport: "streamable-http",
+              protocolVersion: "2025-03-26",
+              auth: { type: "header", header: "Authorization", valuePrefix: "Bearer" },
+              features: [{ id: "notebooks", label: "Notebooks", tools: ["notebook_list", "notebook_create"] }],
+            };
+          }
+          if (path === "/v1/mcp/keys" && method === "GET") {
+            return { ok: true, keys: state.mcpKeys };
+          }
+          if (path === "/v1/mcp/keys" && method === "POST") {
+            const name = String((request.body as { name?: string })?.name || "MCP API key");
+            const key = {
+              id: `key-${state.mcpKeys.length + 1}`,
+              name,
+              prefix: "nlm_mcp_demo…1234",
+              status: "active" as const,
+              createdAt: "2026-08-14T06:00:00Z",
+              createdBy: "dashboard",
+              lastUsedAt: "",
+              revokedAt: "",
+              legacy: false,
+            };
+            state.mcpKeys = [key, ...state.mcpKeys];
+            return { ok: true, apiKey: "nlm_mcp_test-secret-once", key };
+          }
+          if (path.startsWith("/v1/mcp/keys/") && method === "DELETE") {
+            const id = path.split("/").pop();
+            const key = state.mcpKeys.find((item) => item.id === id);
+            if (!key) throw new Error("MCP key not found");
+            key.status = "revoked";
+            key.revokedAt = "2026-08-14T06:05:00Z";
+            return { ok: true, key };
+          }
+          if (path.startsWith("/v1/mcp/usage") && method === "GET") {
+            const period = path.includes("period=today") ? "today" : path.includes("period=30d") ? "30d" : "7d";
+            return {
+              ok: true,
+              period: {
+                name: period,
+                from: period === "today" ? "2026-08-14" : "2026-08-08",
+                to: "2026-08-14",
+                timeZone: "Asia/Ho_Chi_Minh",
+              },
+              summary: {
+                createRequested: 12,
+                createSuccess: 9,
+                createFailed: 3,
+                downloadSuccess: 5,
+                dailyLimit: 100,
+                dailyUsed: 9,
+                dailyReserved: 1,
+                dailyRemaining: 90,
+                dailyResetAt: "2026-08-14T17:00:00Z",
+              },
+              series: [
+                { date: "2026-08-13", createRequested: 4, createSuccess: 3, createFailed: 1, downloadSuccess: 2 },
+                { date: "2026-08-14", createRequested: 8, createSuccess: 6, createFailed: 2, downloadSuccess: 3 },
+              ],
+              recent: [
+                {
+                  id: "usage-1",
+                  tool: "artifact_generate",
+                  operation: "create",
+                  status: "success",
+                  keyId: "key-1",
+                  keyPrefix: "nlm_mcp_demo…1234",
+                  latencyMs: 842,
+                  errorCode: "",
+                  createdAt: "2026-08-14T06:10:00Z",
+                  dateKey: "2026-08-14",
+                },
+                {
+                  id: "usage-2",
+                  tool: "note_create",
+                  operation: "create",
+                  status: "failed",
+                  keyId: "key-1",
+                  keyPrefix: "nlm_mcp_demo…1234",
+                  latencyMs: 15,
+                  errorCode: "ValidationError",
+                  createdAt: "2026-08-14T06:05:00Z",
+                  dateKey: "2026-08-14",
+                },
+              ],
+            };
+          }
           if (path === "/v1/settings") {
             return {
               server: "notebooklm-server",
@@ -337,11 +493,191 @@ test.afterEach(async ({ page }, testInfo) => {
 test("overview and version modal stay inside viewport", async ({ page }) => {
   await expect(page.locator(".notebook-row.active", { hasText: "AI Research OS" })).toBeVisible();
   await expect(page.locator(".notebook-detail", { hasText: "AI Research OS" })).toBeVisible();
+  const dockOrder = await page.locator(".status-dock").evaluate((dock) =>
+    Array.from(dock.children).map((node) => {
+      const element = node as HTMLElement;
+      return element.getAttribute("aria-label") || element.getAttribute("title") || element.textContent?.trim() || "";
+    }),
+  );
+  expect(dockOrder.indexOf("Connect Drive Down Cookies")).toBeLessThan(
+    dockOrder.indexOf("Get cookies from extension"),
+  );
+  expect(dockOrder.indexOf("Get cookies from extension")).toBeLessThan(
+    dockOrder.findIndex((item) => item.startsWith("Drive Down Cookies:")),
+  );
+  expect(dockOrder.findIndex((item) => item.startsWith("Drive Down Cookies:"))).toBeLessThan(
+    dockOrder.findIndex((item) => item.includes("ready")),
+  );
   await expectSidebarContained(page);
   await expect(page.locator(".tabs").getByRole("button", { name: "Sources", exact: true })).toBeVisible();
   await page.getByRole("button", { name: /Version/ }).click();
   await expect(page.locator(".modal .panel-title").getByText("Update", { exact: true })).toBeVisible();
   await expectElementInsideViewport(page, ".modal");
+});
+
+test("notebook open buttons launch Google NotebookLM URL", async ({ page }) => {
+  await page
+    .locator(".notebook-row.active")
+    .getByTitle("Open AI Research OS in Google NotebookLM")
+    .click();
+  await page.locator(".notebook-detail").getByTitle("Open with NotebookLM").click();
+
+  await expect
+    .poll(() =>
+      page.evaluate(() => (window as typeof window & { __openedExternal?: string[] }).__openedExternal),
+    )
+    .toEqual([
+      "https://notebooklm.google.com/notebook/nb-1",
+      "https://notebooklm.google.com/notebook/nb-1",
+    ]);
+});
+
+test("status code 16 automatically syncs cookies and retries the failed request once", async ({
+  page,
+}) => {
+  await page.evaluate(() => {
+    const bridge = window.notebooklmDesktop;
+    if (!bridge) throw new Error("Desktop bridge mock is unavailable");
+    const originalRequest = bridge.backendRequest.bind(bridge);
+    let rejectNotebookListOnce = true;
+    bridge.backendRequest = async (request) => {
+      if (request.path === "/v1/notebooks" && (request.method || "GET") === "GET") {
+        const testWindow = window as typeof window & { __authRecoveryNotebookAttempts?: number };
+        testWindow.__authRecoveryNotebookAttempts =
+          (testWindow.__authRecoveryNotebookAttempts || 0) + 1;
+      }
+      if (
+        rejectNotebookListOnce &&
+        request.path === "/v1/notebooks" &&
+        (request.method || "GET") === "GET"
+      ) {
+        rejectNotebookListOnce = false;
+        throw new Error(
+          "RPC wXbhsf returned null result with status code 16 (Unauthenticated). Found IDs: ['wXbhsf'].",
+        );
+      }
+      return originalRequest(request);
+    };
+    (window as typeof window & { __extensionMessages?: string[] }).__extensionMessages = [];
+  });
+
+  await page.getByTitle("Refresh notebooks").click();
+
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (window as typeof window & { __extensionMessages?: string[] }).__extensionMessages,
+      ),
+    )
+    .toEqual(["sync-now"]);
+  await expect(page.getByTitle("Drive Down Cookies: 12 cookies verified from local Chrome")).toBeVisible();
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (window as typeof window & { __authRecoveryNotebookAttempts?: number })
+            .__authRecoveryNotebookAttempts,
+      ),
+    )
+    .toBe(2);
+  await expect(page.locator(".error-banner")).toHaveCount(0);
+});
+
+test("research binds Cancel to the replacement task, never the previous task", async ({
+  page,
+}) => {
+  await page.evaluate(() => {
+    const bridge = window.notebooklmDesktop;
+    if (!bridge) throw new Error("Desktop bridge mock is unavailable");
+    const originalRequest = bridge.backendRequest.bind(bridge);
+    let startCount = 0;
+
+    bridge.backendRequest = async (request) => {
+      const method = request.method || "GET";
+      if (request.path.endsWith("/research") && method === "POST") {
+        const testWindow = window as typeof window & {
+          __backendRequests?: string[];
+          __resolveResearchStart?: () => void;
+        };
+        testWindow.__backendRequests?.push(`${method} ${request.path}`);
+        startCount += 1;
+        if (startCount === 1) {
+          return { task_id: "research-old", report_id: null, status: "started" };
+        }
+        return new Promise((resolve) => {
+          testWindow.__resolveResearchStart = () =>
+            resolve({ task_id: "research-new", report_id: null, status: "started" });
+        });
+      }
+      return originalRequest(request);
+    };
+  });
+
+  await clickTab(page, "Research");
+  const query = page.getByPlaceholder("Research topic or question");
+  const start = page.getByRole("button", { name: "Start", exact: true });
+  const status = page.getByRole("button", { name: "Status", exact: true });
+  const cancel = page.getByRole("button", { name: "Cancel", exact: true });
+
+  await query.fill("First research task");
+  await start.click();
+  await expect(page.locator(".json-preview")).toContainText('"task_id": "research-old"');
+
+  await query.fill("Replacement research task");
+  await start.click();
+  await expect.soft(start).toBeDisabled();
+  await expect.soft(status).toBeDisabled();
+  await expect.soft(cancel).toBeDisabled();
+  await expect.soft(page.locator(".task-count")).toHaveText("starting");
+
+  await page.evaluate(() => {
+    const testWindow = window as typeof window & { __resolveResearchStart?: () => void };
+    testWindow.__resolveResearchStart?.();
+  });
+  await expect(page.locator(".json-preview")).toContainText('"task_id": "research-new"');
+  await expect(cancel).toBeEnabled();
+  await cancel.click();
+
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        ((window as typeof window & { __backendRequests?: string[] }).__backendRequests || [])
+          .filter((request) => request.startsWith("DELETE ")),
+      ),
+    )
+    .toEqual(["DELETE /v1/notebooks/nb-1/research/research-new"]);
+});
+
+test("blank notebook titles render a stable accessible fallback", async ({ page }) => {
+  await page.evaluate(() => {
+    const bridge = window.notebooklmDesktop;
+    if (!bridge) throw new Error("Desktop bridge mock is unavailable");
+    const originalRequest = bridge.backendRequest.bind(bridge);
+    bridge.backendRequest = async (request) => {
+      if (request.path === "/v1/notebooks" && (request.method || "GET") === "GET") {
+        const result = await originalRequest(request) as {
+          notebooks: Array<{ id: string; title: string }>;
+        };
+        return {
+          notebooks: [
+            ...result.notebooks,
+            { id: "nb-empty-1234", title: "   " },
+          ],
+        };
+      }
+      return originalRequest(request);
+    };
+  });
+
+  await page.getByTitle("Refresh notebooks").click();
+  const fallbackName = "Untitled notebook · nb-empty";
+  await expect(page.getByRole("button", { name: fallbackName, exact: true })).toBeVisible();
+  await expect(page.getByTitle(`Delete notebook ${fallbackName}`)).toBeVisible();
+
+  await page.getByPlaceholder("Search notebook").fill("nb-empty");
+  await expect(page.locator(".notebook-row")).toHaveCount(1);
+  await expect(page.getByRole("button", { name: fallbackName, exact: true })).toBeVisible();
 });
 
 test("all workspace tabs render without layout overflow", async ({ page }) => {
@@ -354,6 +690,7 @@ test("all workspace tabs render without layout overflow", async ({ page }) => {
     "Notes",
     "Verify",
     "Share",
+    "MCP",
   ];
 
   for (const tab of tabs) {
@@ -368,6 +705,63 @@ test("all workspace tabs render without layout overflow", async ({ page }) => {
     const button = page.locator(".tabs").getByRole("button", { name: tab, exact: true });
     await expect(button).toBeEnabled();
   }
+});
+
+test("late backend log events do not hide ready workspace tabs", async ({ page }) => {
+  await expect(page.locator(".tabs").getByRole("button", { name: "MCP", exact: true })).toBeVisible();
+
+  await page.evaluate(() => {
+    (window as typeof window & {
+      __emitBackendStatus?: (payload: { status: string; message?: string }) => void;
+    }).__emitBackendStatus?.({ status: "log", message: "late stdout line" });
+  });
+
+  await expect(page.locator(".status-pill.ok", { hasText: "ready" })).toBeVisible();
+  await expect(page.locator(".tabs").getByRole("button", { name: "MCP", exact: true })).toBeVisible();
+});
+
+test("MCP tab creates a one-time key, copies setup and revokes it", async ({ page }) => {
+  await clickTab(page, "MCP");
+  await expect(page.getByRole("heading", { name: "MCP connections" })).toBeVisible();
+  await expect(page.getByText("https://notebooklm.example.test/mcp", { exact: true })).toBeVisible();
+
+  await page.getByPlaceholder("Ví dụ: Claude Desktop").fill("Claude Desktop");
+  await page.getByRole("button", { name: "Generate New Key" }).click();
+  await expect(page.getByText("nlm_mcp_test-secret-once")).toBeVisible();
+
+  await page.getByRole("button", { name: "Sao chép key" }).click();
+  await expect.poll(() =>
+    page.evaluate(() => (window as typeof window & { __copiedText?: string }).__copiedText),
+  ).toBe("nlm_mcp_test-secret-once");
+
+  await page.getByRole("button", { name: "Copy config" }).click();
+  await expect.poll(() =>
+    page.evaluate(() => (window as typeof window & { __copiedText?: string }).__copiedText),
+  ).toContain("YOUR_MCP_API_KEY");
+
+  await page.getByRole("button", { name: "Thu hồi key Claude Desktop" }).click();
+  await expect(page.getByText("Revoked", { exact: true })).toBeVisible();
+  await expectNoHorizontalOverflow(page);
+});
+
+test("MCP usage dashboard shows gateway metrics, quota and period controls", async ({ page }) => {
+  await clickTab(page, "MCP");
+  const dashboard = page.getByLabel("Thống kê sử dụng MCP");
+  await expect(dashboard.getByRole("heading", { name: "Usage Dashboard" })).toBeVisible();
+  await expect(dashboard.locator("article", { hasText: "Lượt tạo" }).getByText("12", { exact: true })).toBeVisible();
+  await expect(dashboard.locator("article", { hasText: "Lượt tải về" }).getByText("5", { exact: true })).toBeVisible();
+  await expect(dashboard.locator("article", { hasText: "Tạo thành công" }).getByText("9", { exact: true })).toBeVisible();
+  await expect(dashboard.locator("article", { hasText: "Tạo thất bại" }).getByText("3", { exact: true })).toBeVisible();
+  await expect(dashboard.getByRole("progressbar", { name: "Quota tạo MCP hôm nay" })).toHaveAttribute("aria-valuemax", "100");
+  await expect(dashboard.getByText("90 còn lại", { exact: true })).toBeVisible();
+  await expect(dashboard.getByText("artifact_generate", { exact: true })).toBeVisible();
+  await expect(dashboard.getByText("ValidationError", { exact: true })).toBeVisible();
+
+  await dashboard.getByRole("tab", { name: "Hôm nay" }).click();
+  await expect.poll(() =>
+    page.evaluate(() => (window as typeof window & { __backendRequests?: string[] }).__backendRequests),
+  ).toContain("GET /v1/mcp/usage?period=today");
+  await expectNoHorizontalOverflow(page);
 });
 
 test("sidebar notebook selection opens visible detail", async ({ page }) => {
@@ -410,6 +804,21 @@ test("notebook search and create rename delete dialogs work without native promp
 test("remaining MVP buttons produce visible state changes or backend calls", async ({ page }) => {
   await page.getByTitle("Load summary").click();
   await expect(page.getByText("A compact workspace for sources")).toBeVisible();
+
+  await page.getByRole("button", { name: "Connect Drive Down Cookies" }).click();
+  await expect.poll(() =>
+    page.evaluate(() => (window as typeof window & { __extensionMessages?: string[] }).__extensionMessages),
+  ).toContain("connect");
+  await expect(page.getByTitle("Drive Down Cookies: v0.7.3")).toBeVisible();
+  await page.getByRole("button", { name: "Get cookies from extension" }).click();
+  await expect.poll(() =>
+    page.evaluate(() => (window as typeof window & { __extensionMessages?: string[] }).__extensionMessages),
+  ).toContain("sync-now");
+  await expect(page.getByTitle("Drive Down Cookies: 12 cookies verified from local Chrome")).toBeVisible();
+  await page.getByRole("button", { name: "Restart backend" }).click();
+  await expect.poll(() =>
+    page.evaluate(() => (window as typeof window & { __restartBackendCalls?: number }).__restartBackendCalls),
+  ).toBe(1);
 
   const notebookListCallsBefore = await backendRequestCount(page, "GET /v1/notebooks");
   await page.getByTitle("Refresh notebooks").click();
@@ -457,7 +866,7 @@ test("source, chat, studio, notes, and share flows keep panels stable", async ({
   });
   await page.getByRole("button", { name: "Add" }).click();
   await expect(page.getByText("brief.txt")).toBeVisible();
-  await page.getByRole("button", { name: "Drive" }).click();
+  await page.getByRole("button", { name: "Drive", exact: true }).click();
   await page.getByPlaceholder("Google Drive file id").fill("drive-file-1");
   await page.getByRole("button", { name: "Add" }).click();
   await expect(page.getByText("Drive source")).toBeVisible();
@@ -508,7 +917,7 @@ test("source, chat, studio, notes, and share flows keep panels stable", async ({
 
   await clickTab(page, "Research");
   await page.getByPlaceholder("Research topic or question").fill("Find source gaps");
-  await page.getByRole("button", { name: "Start" }).click();
+  await page.getByRole("button", { name: "Start", exact: true }).click();
   await expect(page.locator(".task-count", { hasText: "started" })).toBeVisible();
   await page.getByRole("button", { name: "Status" }).click();
   await expect(page.getByText("Research completed")).toBeVisible();
@@ -531,11 +940,104 @@ test("source, chat, studio, notes, and share flows keep panels stable", async ({
   await expectNoVisibleOverlap(page);
 });
 
-test("browser-only locked state is readable when preload bridge is missing", async ({ browser }) => {
+test("browser-only password gate is readable when preload bridge is missing", async ({ browser }) => {
   const page = await browser.newPage({ viewport: { width: 1280, height: 760 } });
   await page.goto("/");
-  await expect(page.getByText("Open with Electron")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "NotebookLM Pro" })).toBeVisible();
+  await expect(page.getByPlaceholder("Nhập mật khẩu dashboard")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Đăng nhập" })).toBeDisabled();
   await expectNoHorizontalOverflow(page);
+  await page.close();
+});
+
+test("browser-only frontend persists an HttpOnly dashboard session", async ({ browser }) => {
+  const page = await browser.newPage({ viewport: { width: 1280, height: 760 } });
+  const authHeaders: string[] = [];
+  let authenticated = false;
+  await page.route("**/auth/**", async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path === "/auth/session") {
+      await route.fulfill({ json: { authenticated } });
+      return;
+    }
+    if (path === "/auth/login") {
+      expect(request.postDataJSON()).toEqual({ password: "123" });
+      authenticated = true;
+      await route.fulfill({
+        headers: {
+          "content-type": "application/json",
+          "set-cookie": "notebooklm_dashboard_session=test-session; Path=/; HttpOnly; SameSite=Strict",
+        },
+        body: JSON.stringify({ ok: true, authenticated: true }),
+      });
+      return;
+    }
+    if (path === "/auth/logout") {
+      authenticated = false;
+      await route.fulfill({ json: { ok: true, authenticated: false } });
+      return;
+    }
+    await route.fulfill({ status: 404, json: { error: { message: "not found" } } });
+  });
+  await page.route("**/v1/**", async (route) => {
+    const request = route.request();
+    authHeaders.push(request.headers().authorization || "");
+    const path = new URL(request.url()).pathname;
+    if (path === "/v1/status") {
+      await route.fulfill({ json: { ok: true, server: "notebooklm-server", version: "0.8.0" } });
+      return;
+    }
+    if (path === "/v1/notebooks") {
+      await route.fulfill({
+        json: {
+          notebooks: [
+            {
+              id: "nb-web-1",
+              title: "Production smoke notebook",
+              created_at: "2026-08-14T00:00:00Z",
+              sources_count: 0,
+              is_owner: true,
+            },
+          ],
+        },
+      });
+      return;
+    }
+    if (path.endsWith("/sources")) {
+      await route.fulfill({ json: { sources: [] } });
+      return;
+    }
+    if (path.endsWith("/artifacts")) {
+      await route.fulfill({ json: { artifacts: [] } });
+      return;
+    }
+    if (path.endsWith("/notes")) {
+      await route.fulfill({ json: { notes: [] } });
+      return;
+    }
+    await route.fulfill({ status: 404, json: { error: { message: "not found" } } });
+  });
+
+  await page.goto("/");
+  await page.getByPlaceholder("Nhập mật khẩu dashboard").fill("123");
+  await page.getByRole("button", { name: "Đăng nhập" }).click();
+
+  await expect(page.getByText("Production smoke notebook").first()).toBeVisible();
+  await expect(page.locator(".status-pill.ok", { hasText: "ready" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Connect Drive Down Cookies" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Login locally and sync to VPS" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Create notebook" })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "Đăng xuất" })).toBeEnabled();
+  expect(authHeaders.length).toBeGreaterThanOrEqual(2);
+  expect(authHeaders.every((value) => value === "")).toBe(true);
+  await expectNoHorizontalOverflow(page);
+
+  await page.reload();
+  await expect(page.getByText("Production smoke notebook").first()).toBeVisible();
+
+  await page.getByRole("button", { name: "Đăng xuất" }).click();
+  await expect(page.getByPlaceholder("Nhập mật khẩu dashboard")).toBeVisible();
   await page.close();
 });
 
@@ -561,15 +1063,24 @@ async function backendRequestCount(page: Page, pattern: string) {
 }
 
 async function expectStableClickableControls(page: Page) {
-  const badControls = await page.locator("button:not([hidden]), input:not([hidden]), select:not([hidden])")
+  const badControls = await page.locator("button:not([hidden]), input:not([hidden]), select:not([hidden]), textarea:not([hidden])")
     .evaluateAll((elements) =>
       elements
         .map((element) => {
           const rect = element.getBoundingClientRect();
-          const text = element.textContent?.trim() || element.getAttribute("aria-label") || "";
-          return { text, width: rect.width, height: rect.height };
+          const control = element as HTMLInputElement;
+          const name =
+            element.textContent?.trim() ||
+            element.getAttribute("aria-label") ||
+            element.getAttribute("title") ||
+            control.placeholder ||
+            Array.from(control.labels || []).map((label) => label.textContent?.trim()).join(" ");
+          return { name, width: rect.width, height: rect.height };
         })
-        .filter((item) => item.width > 0 && item.height > 0 && item.height < 34),
+        .filter(
+          (item) =>
+            item.width > 0 && item.height > 0 && (item.height < 34 || !item.name),
+        ),
     );
   expect(badControls).toEqual([]);
 }

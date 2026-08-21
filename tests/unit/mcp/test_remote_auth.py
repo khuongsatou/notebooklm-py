@@ -21,6 +21,7 @@ from notebooklm.mcp._auth import (  # noqa: E402 - after importorskip guard
     build_auth_provider,
     get_configured_token,
 )
+from notebooklm.mcp._managed_keys import ManagedKeyStore  # noqa: E402
 
 
 @pytest.mark.asyncio
@@ -77,6 +78,26 @@ def test_build_auth_provider_maps_token_to_provider() -> None:
     assert build_auth_provider("") is None
     provider = build_auth_provider("a-token")
     assert isinstance(provider, McpBearerAuthProvider)
+
+
+@pytest.mark.asyncio
+async def test_managed_key_provider_observes_immediate_revocation(tmp_path) -> None:
+    store = ManagedKeyStore(tmp_path / "mcp-keys.json")
+    issued = store.create(name="Managed client")
+    provider = build_auth_provider(None, store)
+    assert isinstance(provider, McpBearerAuthProvider)
+
+    token = await provider.verify_token(issued["apiKey"])
+    assert token is not None
+    assert token.client_id == f"managed:{issued['key']['id']}"
+    assert token.claims == {
+        "auth_type": "managed",
+        "key_id": issued["key"]["id"],
+        "key_prefix": issued["key"]["prefix"],
+    }
+    assert issued["apiKey"] not in repr(token)
+    store.revoke(issued["key"]["id"])
+    assert await provider.verify_token(issued["apiKey"]) is None
 
 
 def test_create_server_is_env_free(monkeypatch: pytest.MonkeyPatch) -> None:

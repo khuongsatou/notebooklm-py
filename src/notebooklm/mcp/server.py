@@ -18,7 +18,7 @@ Design highlights:
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Callable
-from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
 from typing import cast
 
 from fastmcp import FastMCP
@@ -27,6 +27,7 @@ from fastmcp.server.auth import AuthProvider
 from ..client import NotebookLMClient
 from ._context import AppState
 from ._filelink import FileTransferConfig
+from ._recovery import configure_refresh_cmd
 
 __all__ = ["SERVER_INSTRUCTIONS", "SERVER_NAME", "create_server", "register_all"]
 
@@ -96,6 +97,9 @@ def create_server(
         client and which has every tool module registered.
     """
 
+    if client_factory is None:
+        configure_refresh_cmd(profile=profile)
+
     def _default_factory() -> AbstractAsyncContextManager[NotebookLMClient]:
         # from_storage returns a dual awaitable/async-context-manager; we use only
         # the async-context-manager protocol.
@@ -108,8 +112,21 @@ def create_server(
 
     @asynccontextmanager
     async def lifespan(_server: FastMCP) -> AsyncIterator[AppState]:
-        async with factory() as client:
-            yield AppState(client=client, file_transfer=file_transfer)
+        async with AsyncExitStack() as stack:
+            state = AppState(
+                file_transfer=file_transfer,
+                client_factory=factory,
+                exit_stack=stack,
+                profile=profile,
+            )
+            try:
+                await state.ensure_client()
+            except Exception as exc:
+                # Keep meta/auth tools reachable when local NotebookLM auth is stale.
+                # Tools that need a client will retry recovery on later requests only
+                # if the startup attempt did not already run it.
+                state.client_error = str(exc)
+            yield state
 
     mcp = FastMCP(name=SERVER_NAME, instructions=SERVER_INSTRUCTIONS, lifespan=lifespan, auth=auth)
     register_all(mcp)

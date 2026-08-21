@@ -2,6 +2,10 @@ const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("notebooklmDesktop", {
   getAppInfo: () => ipcRenderer.invoke("app:info"),
+  restartBackend: () => ipcRenderer.invoke("backend:restart"),
+  localLoginAndSync: () => ipcRenderer.invoke("notebooklm:local-login-sync"),
+  resetLocalLogin: () => ipcRenderer.invoke("notebooklm:reset-local-login"),
+  checkVpsConnected: () => ipcRenderer.invoke("notebooklm:check-vps-connected"),
   backendRequest: (request) => ipcRenderer.invoke("backend:request", request),
   onBackendStatus: (callback) => {
     const listener = (_event, payload) => callback(payload);

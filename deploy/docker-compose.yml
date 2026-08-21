@@ -25,11 +25,20 @@ services:
     # `id -u`/`id -g` automatically, or set them in .env.
     user: "${NOTEBOOKLM_UID:-1000}:${NOTEBOOKLM_GID:-1000}"
     environment:
+      NOTEBOOKLM_DEPLOY_ENV: ${NOTEBOOKLM_DEPLOY_ENV:-development}
       # Bearer token clients present (Authorization: Bearer ...). Env-only. OPTIONAL
       # here so an OAuth-ONLY deploy (claude.ai, no Claude Code) works — set the bearer
       # and/or the OAuth vars below. The server's own fail-closed guard refuses to start
       # on this 0.0.0.0 bind if NEITHER is configured (clear message in the logs).
       NOTEBOOKLM_MCP_TOKEN: ${NOTEBOOKLM_MCP_TOKEN:-}
+      # Accept dashboard-issued keys from the shared profile store. Revocation is
+      # checked on every MCP request; cleartext keys are never persisted.
+      NOTEBOOKLM_MCP_MANAGED_KEYS_ENABLED: ${NOTEBOOKLM_MCP_MANAGED_KEYS_ENABLED:-1}
+      # Successful create operations per Asia/Ho_Chi_Minh calendar day.
+      NOTEBOOKLM_MCP_DAILY_CREATE_LIMIT: ${NOTEBOOKLM_MCP_DAILY_CREATE_LIMIT:-100}
+      # Private single-user deploy opt-out: set to 1 to disable MCP bearer/OAuth auth.
+      # Use only behind access you already control.
+      NOTEBOOKLM_MCP_AUTH_BYPASS: ${NOTEBOOKLM_MCP_AUTH_BYPASS:-}
       # Binds 0.0.0.0 (for the cloudflared sidecar) → requires bearer and/or OAuth.
       NOTEBOOKLM_MCP_ALLOW_EXTERNAL_BIND: "1"
       # Optional self-hosted OAuth (for claude.ai). Unset → bearer-only; set both
@@ -37,6 +46,7 @@ services:
       # (registered clients + tokens) persists under the mounted profile volume.
       NOTEBOOKLM_MCP_OAUTH_PASSWORD: ${NOTEBOOKLM_MCP_OAUTH_PASSWORD:-}
       NOTEBOOKLM_MCP_OAUTH_BASE_URL: ${NOTEBOOKLM_MCP_OAUTH_BASE_URL:-}
+      NOTEBOOKLM_MCP_PUBLIC_URL: ${NOTEBOOKLM_MCP_PUBLIC_URL:-}
       # Point the app at the mounted profile, independent of the (arbitrary) uid's
       # home. The host dir is always mounted as the profile literally named
       # "server"; NOTEBOOKLM_HOME/profiles/server is where the app reads+writes.

@@ -1,0 +1,84 @@
+# Rsync-only excludes for VPS source deployments.
+# Keep this stricter than .gitignore: rsync does not read .gitignore by default.
+
+# VCS / local worktrees
+/.git/
+/.worktree/
+/.worktrees/
+/worktrees/
+/.sisyphus/
+/.scratch/
+/.claude/
+
+# Python environments, caches, and build output
+/.venv/
+/.venv*/
+/env/
+/venv/
+**/__pycache__/
+*.py[cod]
+/.pytest_cache/
+/.mypy_cache/
+/.ruff_cache/
+/.coverage
+/coverage.json
+/htmlcov/
+/dist/
+/build/
+*.egg-info/
+
+# JavaScript / Electron generated output
+node_modules/
+/desktop/node_modules/
+/desktop/build/
+/desktop/dist/
+/desktop/test-results/
+/desktop/playwright-report/
+
+# Local NotebookLM/runtime state and captures
+/.notebooklm/
+/captured_rpcs/
+/downloads/
+/deploy/profile/
+
+# Deployment secrets. Keep example files synced.
+/.env
+/.env.local
+/.env.development
+/.env.production
+/.env.vps
+/.env.mcp
+/deploy/.env
+/deploy/.env.local
+/deploy/.env.development
+/deploy/.env.production
+/deploy/.env.vps
+/deploy/.env.mcp
+/desktop/.env
+/desktop/.env.local
+/desktop/.env.development
+/desktop/.env.production
+
+# Heavy generated media/workflow artifacts.
+/course/
+/workflows/
+/investigation_output/
+*.mp4
+*.mov
+*.mkv
+*.webm
+*.mp3
+*.wav
+*.aiff
+*.flac
+*.zip
+*.tar
+*.tar.*
+*.tgz
+*.zst
+*.7z
+*.rar
+*.dmg
+
+# OS/editor noise
+.DS_Store

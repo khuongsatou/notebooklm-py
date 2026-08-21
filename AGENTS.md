@@ -1,7 +1,7 @@
 # Repository Guidelines
 
 **Status:** Active
-**Last Updated:** 2026-07-01
+**Last Updated:** 2026-07-31
 
 ## Project Structure & Module Organization
 
@@ -39,6 +39,15 @@ Follow the existing commit style: `feat(cli): ...`, `fix(cli): ...`, `refactor(t
 
 For Codex or other parallel agents:
 
+- For every NotebookLM browser UI check, Chrome-extension test, cookie capture, or
+  authenticated browser workflow in this project, Computer Use is mandatory and
+  Chrome must use **Profile 185** at
+  `/Users/apple/Library/Application Support/Google/Chrome/Profile 185`. Before
+  interacting with NotebookLM or the extension, verify the active profile in
+  `chrome://version`. Do not substitute another Chrome profile, the in-app browser,
+  standalone Playwright, or another browser-control surface. If Computer Use or
+  Profile 185 is unavailable, stop and report the blocker instead of falling back;
+  only the user may explicitly authorize an exception.
 - Before starting any new project or major task, inspect the most recently finalized project that is relevant to the work. Reuse its validated direction, decisions, conventions, and lessons learned as a reference, and explicitly note any intentional deviations before implementation.
 - Prefer `--json` output and pass explicit notebook IDs instead of relying on `notebooklm use`.
 - For Gemini Gem/chatbot creation, verification, or workflow runs, do not use the generic Gemini CLI directly. Use the local tool repo `/Users/apple/Desktop/ex_project_9/mtips5s_gemini` through its backend/API/tools (`/api/session/init`, `/api/gems`, `/api/chat/generate`, or the extension workflow) and save the resulting Gem URL, config, and verification artifacts back into the workflow.

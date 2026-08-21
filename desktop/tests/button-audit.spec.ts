@@ -44,14 +44,63 @@ test.beforeEach(async ({ page }) => {
           },
         },
       });
-      (window as typeof window & { __backendRequests?: string[] }).__backendRequests = [];
+      (window as typeof window & { __openedExternal?: string[] }).__openedExternal = [];
+      window.open = ((url?: string | URL) => {
+        (window as typeof window & { __openedExternal?: string[] }).__openedExternal?.push(
+          String(url),
+        );
+        return null;
+      }) as typeof window.open;
+      (window as typeof window & { __extensionMessages?: string[] }).__extensionMessages = [];
+      Object.defineProperty(window, "chrome", {
+        configurable: true,
+        value: {
+          runtime: {
+            sendMessage(
+              _extensionId: string,
+              message: { type?: string },
+              callback: (response: Record<string, unknown>) => void,
+            ) {
+              (window as typeof window & { __extensionMessages?: string[] }).__extensionMessages?.push(
+                message.type || "unknown",
+              );
+              callback(
+                message.type === "connect"
+                  ? { ok: true, status: "ready", extension_version: "0.7.3" }
+                  : {
+                      ok: true,
+                      status: "ok",
+                      cookie_count: 12,
+                      received_count: 12,
+                      persisted_count: 12,
+                      client_reloaded: true,
+                      auth_verified: true,
+                    },
+              );
+            },
+          },
+        },
+      });
+      (window as typeof window & { __backendRequests?: string[]; __restartBackendCalls?: number }).__backendRequests = [];
+      (window as typeof window & { __backendRequests?: string[]; __restartBackendCalls?: number }).__restartBackendCalls = 0;
+
+      const backendInfo = { baseUrl: "http://127.0.0.1:5173", port: 5173, status: "ready" as const };
 
       window.notebooklmDesktop = {
         async getAppInfo() {
           return {
             name: "notebooklm-pro-desktop",
             version: "0.1.0",
-            backend: { baseUrl: "http://127.0.0.1:5173", port: 5173, status: "ready" },
+            backend: backendInfo,
+          };
+        },
+        async restartBackend() {
+          (window as typeof window & { __restartBackendCalls?: number }).__restartBackendCalls =
+            ((window as typeof window & { __restartBackendCalls?: number }).__restartBackendCalls || 0) + 1;
+          return {
+            name: "notebooklm-pro-desktop",
+            version: "0.1.0",
+            backend: backendInfo,
           };
         },
         async backendRequest(request) {
@@ -318,6 +367,38 @@ test("button audit: every enabled MVP control has backend or local-state evidenc
   await expectBackend(page, audit, "Top bar", "Refresh notebooks", "GET /v1/notebooks", async () => {
     await page.getByTitle("Refresh notebooks").click();
   });
+  await expectLocal(page, audit, "Top bar", "Connect extension", "Drive Down Cookies connect handshake", async () => {
+    await page.getByRole("button", { name: "Connect Drive Down Cookies" }).click();
+    await expect.poll(() =>
+      page.evaluate(() => (window as typeof window & { __extensionMessages?: string[] }).__extensionMessages),
+    ).toContain("connect");
+  });
+  await expectBackend(
+    page,
+    audit,
+    "Top bar",
+    "Get cookies",
+    "GET /v1/status",
+    async () => {
+      await page.getByRole("button", { name: "Get cookies from extension" }).click();
+      await expect.poll(() =>
+        page.evaluate(() => (window as typeof window & { __extensionMessages?: string[] }).__extensionMessages),
+      ).toContain("sync-now");
+    },
+  );
+  await expectBackend(
+    page,
+    audit,
+    "Top bar",
+    "Restart backend",
+    "GET /v1/status",
+    async () => {
+      await page.getByRole("button", { name: "Restart backend" }).click();
+      await expect.poll(() =>
+        page.evaluate(() => (window as typeof window & { __restartBackendCalls?: number }).__restartBackendCalls),
+      ).toBe(1);
+    },
+  );
 
   await expectBackend(
     page,
@@ -339,6 +420,27 @@ test("button audit: every enabled MVP control has backend or local-state evidenc
     async () => {
       await page.locator(".notebook-select", { hasText: "AI Research OS" }).click();
       await expect(page.locator(".notebook-row.active", { hasText: "AI Research OS" })).toBeVisible();
+    },
+  );
+
+  await expectLocal(
+    page,
+    audit,
+    "Sidebar",
+    "Open notebook in Google NotebookLM",
+    "external NotebookLM URL opens",
+    async () => {
+      await page
+        .locator(".notebook-row.active")
+        .getByTitle("Open AI Research OS in Google NotebookLM")
+        .click();
+      await expect
+        .poll(() =>
+          page.evaluate(
+            () => (window as typeof window & { __openedExternal?: string[] }).__openedExternal,
+          ),
+        )
+        .toContain("https://notebooklm.google.com/notebook/nb-1");
     },
   );
 
@@ -424,6 +526,23 @@ test("button audit: every enabled MVP control has backend or local-state evidenc
   await expectBackend(page, audit, "Notebook", "Refresh notebook detail", "/sources", async () => {
     await page.getByTitle("Refresh notebook detail").click();
   });
+  await expectLocal(
+    page,
+    audit,
+    "Notebook",
+    "Open active notebook in Google NotebookLM",
+    "external NotebookLM URL opens",
+    async () => {
+      await page.locator(".notebook-detail").getByTitle("Open with NotebookLM").click();
+      await expect
+        .poll(() =>
+          page.evaluate(
+            () => (window as typeof window & { __openedExternal?: string[] }).__openedExternal,
+          ),
+        )
+        .toContain("https://notebooklm.google.com/notebook/nb-1");
+    },
+  );
 
   await clickTab(page, "Sources");
   await expectDisabled(page, audit, "Sources", "Add empty source", undefined, page.locator(".form-panel").getByRole("button", { name: "Add" }));
@@ -552,10 +671,17 @@ test("button audit: every enabled MVP control has backend or local-state evidenc
   });
 
   await clickTab(page, "Research");
-  await expectDisabled(page, audit, "Research", "Start empty research", undefined, page.getByRole("button", { name: "Start" }));
+  await expectDisabled(
+    page,
+    audit,
+    "Research",
+    "Start empty research",
+    undefined,
+    page.getByRole("button", { name: "Start", exact: true }),
+  );
   await expectBackend(page, audit, "Research", "Start research", "POST /v1/notebooks/nb-1/research", async () => {
     await page.getByPlaceholder("Research topic or question").fill("Audit new sources");
-    await page.getByRole("button", { name: "Start" }).click();
+    await page.getByRole("button", { name: "Start", exact: true }).click();
     await expect(page.locator(".task-count", { hasText: "started" })).toBeVisible();
   });
   await expectBackend(page, audit, "Research", "Research status", "GET /v1/notebooks/nb-1/research/status", async () => {
@@ -617,7 +743,7 @@ test("button audit: every enabled MVP control has backend or local-state evidenc
     contentType: "application/json",
   });
 
-  expect(audit).toHaveLength(62);
+  expect(audit).toHaveLength(67);
 });
 
 async function clickTab(page: Page, name: string) {

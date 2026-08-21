@@ -5,6 +5,13 @@ import type {
   ChatAnswer,
   DownloadResult,
   Label,
+  LoginCommandResult,
+  McpConfig,
+  McpKeyIssued,
+  McpKeyList,
+  McpUsage,
+  McpUsagePeriodName,
+  McpApiKey,
   Note,
   Notebook,
   ResearchStart,
@@ -17,6 +24,65 @@ import type {
 
 const browserApiBase = (import.meta.env.VITE_NOTEBOOKLM_API_BASE || "").replace(/\/$/, "");
 
+type AuthenticationRecoveryHandler = () => Promise<void>;
+
+class ApiRequestError extends Error {
+  category?: string;
+  status?: number;
+
+  constructor(message: string, category?: string, status?: number) {
+    super(message);
+    this.name = "ApiRequestError";
+    this.category = category;
+    this.status = status;
+  }
+}
+
+export function isApiAuthenticationError(error: unknown): boolean {
+  return (
+    error instanceof ApiRequestError &&
+    (error.status === 401 || error.status === 403)
+  );
+}
+
+let authenticationRecoveryHandler: AuthenticationRecoveryHandler | null = null;
+let authenticationRecoveryPromise: Promise<void> | null = null;
+let authenticationGeneration = 0;
+
+export function setAuthenticationRecoveryHandler(
+  handler: AuthenticationRecoveryHandler | null,
+): () => void {
+  authenticationRecoveryHandler = handler;
+  return () => {
+    if (authenticationRecoveryHandler === handler) authenticationRecoveryHandler = null;
+  };
+}
+
+function isNotebookLMUnauthenticated(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error || "");
+  return (
+    (error instanceof ApiRequestError && error.category === "auth") ||
+    /RPC\s+\S+\s+returned null result with status code 16\s*\(Unauthenticated\)/i.test(message) ||
+    (/\bUnauthenticated\b/i.test(message) && /\bRPC\b/i.test(message))
+  );
+}
+
+async function recoverAuthentication(failedGeneration: number): Promise<boolean> {
+  if (authenticationGeneration > failedGeneration) return true;
+  if (!authenticationRecoveryHandler) return false;
+  if (!authenticationRecoveryPromise) {
+    authenticationRecoveryPromise = authenticationRecoveryHandler()
+      .then(() => {
+        authenticationGeneration += 1;
+      })
+      .finally(() => {
+        authenticationRecoveryPromise = null;
+      });
+  }
+  await authenticationRecoveryPromise;
+  return true;
+}
+
 async function request<T>(
   path: string,
   options: {
@@ -27,6 +93,33 @@ async function request<T>(
     download?: boolean;
     suggestedName?: string;
   } = {},
+  allowAuthenticationRecovery = true,
+) {
+  const requestAuthenticationGeneration = authenticationGeneration;
+  try {
+    return await requestOnce<T>(path, options);
+  } catch (error) {
+    if (
+      allowAuthenticationRecovery &&
+      isNotebookLMUnauthenticated(error) &&
+      (await recoverAuthentication(requestAuthenticationGeneration))
+    ) {
+      return request<T>(path, options, false);
+    }
+    throw error;
+  }
+}
+
+async function requestOnce<T>(
+  path: string,
+  options: {
+    method?: string;
+    body?: unknown;
+    form?: Record<string, string | null | undefined>;
+    file?: { name: string; type?: string; data: ArrayBuffer };
+    download?: boolean;
+    suggestedName?: string;
+  },
 ) {
   if (window.notebooklmDesktop) {
     return window.notebooklmDesktop.backendRequest<T>({
@@ -41,8 +134,11 @@ async function request<T>(
   }
 
   const url = `${browserApiBase}${path}`;
+  const headers: Record<string, string> = {};
   const init: RequestInit = {
     method: options.method || "GET",
+    headers,
+    credentials: "same-origin",
   };
 
   if (options.file) {
@@ -59,7 +155,7 @@ async function request<T>(
     }
     init.body = form;
   } else if (options.body !== undefined) {
-    init.headers = { "Content-Type": "application/json" };
+    headers["Content-Type"] = "application/json";
     init.body = JSON.stringify(options.body);
   }
 
@@ -74,7 +170,18 @@ async function request<T>(
         ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
           (errorBody as any).error?.message
         : errorBody;
-    throw new Error(typeof detail === "string" ? detail : `Request failed: ${path}`);
+    const category =
+      typeof errorBody === "object" && errorBody && "error" in errorBody
+        ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (errorBody as any).error?.category
+        : response.status === 401 || response.status === 403
+          ? "auth"
+          : undefined;
+    throw new ApiRequestError(
+      typeof detail === "string" ? detail : `Request failed: ${path}`,
+      typeof category === "string" ? category : undefined,
+      response.status,
+    );
   }
 
   if (options.download) {
@@ -100,6 +207,20 @@ async function request<T>(
 }
 
 export const api = {
+  dashboardSession: () =>
+    request<{ authenticated: boolean }>("/auth/session", {}, false),
+  dashboardLogin: (password: string) =>
+    request<{ ok: boolean; authenticated: boolean }>(
+      "/auth/login",
+      { method: "POST", body: { password } },
+      false,
+    ),
+  dashboardLogout: () =>
+    request<{ ok: boolean; authenticated: boolean }>(
+      "/auth/logout",
+      { method: "POST", body: {} },
+      false,
+    ),
   status: () => request<{ ok: boolean; server: string; version: string }>("/v1/status"),
   listNotebooks: async () => {
     const result = await request<{ notebooks: Notebook[] }>("/v1/notebooks");
@@ -264,6 +385,24 @@ export const api = {
       body: { code },
     }),
   checkUpdate: () => request<UpdateStatus>("/v1/settings/update"),
+  runLogin: () =>
+    request<LoginCommandResult>("/v1/settings/login", {
+      method: "POST",
+      body: {},
+    }),
+  getMcpConfig: () => request<McpConfig>("/v1/mcp/config"),
+  listMcpKeys: () => request<McpKeyList>("/v1/mcp/keys"),
+  createMcpKey: (name: string) =>
+    request<McpKeyIssued>("/v1/mcp/keys", {
+      method: "POST",
+      body: { name },
+    }),
+  revokeMcpKey: (keyId: string) =>
+    request<{ ok: boolean; key: McpApiKey }>(`/v1/mcp/keys/${encodeURIComponent(keyId)}`, {
+      method: "DELETE",
+    }),
+  getMcpUsage: (period: McpUsagePeriodName = "7d") =>
+    request<McpUsage>(`/v1/mcp/usage?period=${encodeURIComponent(period)}`),
 };
 
 function artifactFilename(type: string, outputFormat?: string) {

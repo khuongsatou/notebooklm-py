@@ -11,8 +11,10 @@ Two transports are supported:
   a network-reachable server fronting a full Google account must require either a
   ``NOTEBOOKLM_MCP_TOKEN`` bearer (Claude Code/Desktop, verified by :mod:`._auth`)
   or optional self-hosted OAuth (``NOTEBOOKLM_MCP_OAUTH_PASSWORD`` + base URL, for
-  claude.ai, served by :mod:`._oauth`). Both coexist via ``MultiAuth``. All secrets
-  are **env-only** (never CLI flags, so they cannot leak via ``ps aux``).
+  claude.ai, served by :mod:`._oauth`). Both coexist via ``MultiAuth``. A deliberate
+  private deployment can set ``NOTEBOOKLM_MCP_AUTH_BYPASS=1`` to disable the
+  HTTP-auth provider entirely. All secrets are **env-only** (never CLI flags, so
+  they cannot leak via ``ps aux``).
 
 The auth profile is bound once at startup via ``--profile`` /
 ``NOTEBOOKLM_PROFILE``. This module imports NO ``click`` / ``rich`` / ``cli``.
@@ -29,6 +31,7 @@ import sys
 
 from ._auth import MCP_TOKEN_ENV, build_auth, get_configured_token
 from ._filelink import FileLinkSigner, FileTransferConfig
+from ._managed_keys import ManagedKeyStore
 from ._oauth import (
     OAUTH_BASE_URL_ENV,
     OAUTH_PASSWORD_ENV,
@@ -37,6 +40,7 @@ from ._oauth import (
     get_oauth_config,
 )
 from ._urlcheck import _validate_bare_https_origin
+from ._usage import McpUsageMiddleware, McpUsageStore
 from .server import create_server
 
 __all__ = ["main"]
@@ -44,6 +48,13 @@ __all__ = ["main"]
 #: Env var that opts a deployment into binding the HTTP transport to a
 #: non-loopback interface. Off by default — the server is local-first.
 ALLOW_EXTERNAL_BIND_ENV = "NOTEBOOKLM_MCP_ALLOW_EXTERNAL_BIND"
+
+#: Env var that deliberately disables the MCP HTTP auth provider. Off by default.
+#: This is intended only for a private, already-protected deployment.
+AUTH_BYPASS_ENV = "NOTEBOOKLM_MCP_AUTH_BYPASS"
+
+#: Enable API keys issued by the authenticated NotebookLM Pro dashboard.
+MANAGED_KEYS_ENABLED_ENV = "NOTEBOOKLM_MCP_MANAGED_KEYS_ENABLED"
 
 #: Public https origin claude.ai reaches the tunnel at, used to build the signed
 #: file-transfer URLs. Optional — falls back to the OAuth base URL. When neither is
@@ -113,24 +124,35 @@ def _check_http_bind_allowed(host: str, *, allow_external: bool) -> None:
     )
 
 
-def _check_http_auth_required(host: str, token: str | None, oauth: OAuthConfig | None) -> None:
+def _check_http_auth_required(
+    host: str,
+    token: str | None,
+    oauth: OAuthConfig | None,
+    *,
+    auth_bypass: bool = False,
+    managed_keys_enabled: bool = False,
+) -> None:
     """Refuse a non-loopback HTTP bind without SOME auth (fail closed).
 
     Keyed off the effective non-loopback bind — NOT the ``ALLOW_EXTERNAL_BIND``
     flag — so a loopback dev run never needs auth, while any network-reachable bind
     (which fronts a full Google account) must carry either a bearer token (Claude
-    Code/Desktop) or self-hosted OAuth (claude.ai).
+    Code/Desktop), self-hosted OAuth (claude.ai), or an explicit auth-bypass opt-out.
 
     Raises:
-        SystemExit: ``host`` is non-loopback and neither a token nor OAuth is set.
+        SystemExit: ``host`` is non-loopback and no bearer, managed-key, OAuth,
+            or explicit bypass mechanism is configured.
     """
-    if not _is_loopback(host) and token is None and oauth is None:
+    if auth_bypass:
+        return
+    if not _is_loopback(host) and token is None and oauth is None and not managed_keys_enabled:
         raise SystemExit(
             f"Refusing to bind the MCP HTTP transport to non-loopback host "
             f"'{host}' without authentication. A network-reachable MCP server "
             f"fronts a full Google account and must require auth: set "
             f"{MCP_TOKEN_ENV} (a strong random bearer for Claude Code/Desktop) "
-            f"and/or {OAUTH_PASSWORD_ENV} (+ base URL) for OAuth (claude.ai)."
+            f"and/or {OAUTH_PASSWORD_ENV} (+ base URL) for OAuth (claude.ai), "
+            f"or deliberately set {AUTH_BYPASS_ENV}=1 for a private deployment."
         )
 
 
@@ -237,23 +259,39 @@ def main(argv: list[str] | None = None) -> None:
         # " 127.0.0.1 " must not pass the guards and then fail at bind time.
         host = args.host.strip()
         allow_external = os.environ.get(ALLOW_EXTERNAL_BIND_ENV) == "1"
+        auth_bypass = os.environ.get(AUTH_BYPASS_ENV) == "1"
         _check_http_bind_allowed(host, allow_external=allow_external)
         # Resolve auth BEFORE building the server, on the http path only, so
         # create_server stays env-free. The bearer (Claude Code/Desktop) and the
         # optional self-hosted OAuth (claude.ai) are both env-driven; get_oauth_config()
         # raises on partial/weak/non-https config (fail closed).
-        token = get_configured_token()
-        oauth_config = get_oauth_config()
-        _check_http_auth_required(host, token, oauth_config)
+        token = None if auth_bypass else get_configured_token()
+        oauth_config = None if auth_bypass else get_oauth_config()
+        managed_store = None
+        if not auth_bypass and os.environ.get(MANAGED_KEYS_ENABLED_ENV) == "1":
+            managed_store = ManagedKeyStore.for_profile(args.profile)
+        _check_http_auth_required(
+            host,
+            token,
+            oauth_config,
+            auth_bypass=auth_bypass,
+            managed_keys_enabled=managed_store is not None,
+        )
+        if auth_bypass:
+            logging.warning(
+                "%s=1: MCP HTTP bearer/OAuth authentication is disabled for this process",
+                AUTH_BYPASS_ENV,
+            )
         oauth = build_oauth_provider(oauth_config) if oauth_config else None
         # Optional remote file transfer: built only here (http path), validated, and
         # absent (None) when no public URL is set — never a startup crash.
         file_transfer = _build_file_transfer()
         server = create_server(
             profile=args.profile,
-            auth=build_auth(token, oauth),
+            auth=build_auth(token, oauth, managed_store),
             file_transfer=file_transfer,
         )
+        server.add_middleware(McpUsageMiddleware(McpUsageStore.for_profile(args.profile)))
         server.run(transport="http", host=host, port=_resolve_port(args.port))
     else:
         # show_banner=False keeps FastMCP's startup banner out of the host's logs

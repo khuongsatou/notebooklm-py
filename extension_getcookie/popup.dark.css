@@ -1,0 +1,68 @@
+@media (prefers-color-scheme: dark) {
+  html {
+    background-color: #2a2a2a;
+    scrollbar-color: #aaa #333;
+    color: #dfdfdf;
+  }
+
+  h1 > a#location {
+    color: #e09200;
+  }
+
+  .table-container {
+    background-color: #1e1e1e;
+  }
+
+  .sync-panel {
+    background-color: #1f1f1f;
+    border-color: #434343;
+  }
+
+  .sync-mode-tile {
+    background: #2a2a2a;
+    border-color: #474747;
+    color: #f0f0f0;
+  }
+
+  .sync-mode-tile span,
+  .sync-fields label,
+  .sync-status {
+    color: #b7b7b7;
+  }
+
+  .netscape-table th,
+  td {
+    border: solid 1px #424242;
+  }
+
+  .netscape-table tbody tr:nth-of-type(2n + 1) {
+    background-color: #2a2a2a;
+  }
+
+  select {
+    background-color: #3a3a3a;
+    color: #dfdfdf;
+    border: solid 1px #555;
+  }
+
+  .sync-fields input {
+    background-color: #2f2f2f;
+    color: #dfdfdf;
+    border: solid 1px #555;
+  }
+
+  .sync-toggle.off {
+    background: #404040;
+    color: #f0f0f0;
+  }
+
+  .clear-sync-btn {
+    background: #3a1f1f;
+    border-color: #7a3333;
+    color: #ffb4a8;
+  }
+
+  .verify-oauth-link {
+    color: #aebfff;
+  }
+}

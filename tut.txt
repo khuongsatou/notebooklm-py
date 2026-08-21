@@ -1,0 +1,230 @@
+# NotebookLM MCP Auth / Cookie Refresh Tutorial
+
+Use this when NotebookLM MCP loses auth, token fetch fails, or the user asks to get a new
+cookie/session and sync it to the VPS.
+
+Important:
+- Do not print or commit passwords, tokens, or cookie contents.
+- VPS credentials are stored in `.env.vps`. Load them as env vars; never paste them into logs.
+- Current VPS deploy intentionally uses `NOTEBOOKLM_MCP_AUTH_BYPASS=1`, so the public
+  `/mcp` endpoint does not require `NOTEBOOKLM_MCP_TOKEN`. This is a private single-user
+  convenience setting.
+- Default local auth profile:
+  `/Users/apple/.notebooklm/profiles/default/storage_state.json`
+- VPS project path:
+  `/root/mtips5s_note_lm_pro`
+- VPS default profile path:
+  `/root/.notebooklm/profiles/default/storage_state.json`
+
+## 1. Refresh local NotebookLM session from Chrome cookies
+
+Run on local machine:
+
+```bash
+cd /Users/apple/Desktop/ex_project_10/mtips5s_note_lm_pro
+uv run notebooklm login --browser-cookies chrome --account vankhuong240499@gmail.com --include-domains all
+```
+
+## 2. Verify local auth
+
+```bash
+cd /Users/apple/Desktop/ex_project_10/mtips5s_note_lm_pro
+uv run notebooklm auth check --test --passive --json
+```
+
+Expected good result:
+- `status` is `ok`
+- `token_fetch` is `true`
+
+## 3. Sync refreshed session to VPS
+
+```bash
+cd /Users/apple/Desktop/ex_project_10/mtips5s_note_lm_pro
+set -a
+source .env.vps
+set +a
+
+SSHPASS="$DEPLOY_PASSWORD" sshpass -e rsync -az \
+  /Users/apple/.notebooklm/profiles/default/storage_state.json \
+  "$DEPLOY_USER@$DEPLOY_HOST:/root/.notebooklm/profiles/default/storage_state.json"
+```
+
+## 4. Verify auth on VPS host
+
+```bash
+cd /Users/apple/Desktop/ex_project_10/mtips5s_note_lm_pro
+set -a
+source .env.vps
+set +a
+
+SSHPASS="$DEPLOY_PASSWORD" sshpass -e ssh \
+  -o StrictHostKeyChecking=no \
+  -o UserKnownHostsFile=/tmp/notebooklm_known_hosts \
+  "$DEPLOY_USER@$DEPLOY_HOST" \
+  'cd /root/mtips5s_note_lm_pro && uv run notebooklm auth check --test --passive --json'
+```
+
+Expected good result:
+- `status` is `ok`
+- `token_fetch` is `true`
+
+## 5. Restart VPS services
+
+```bash
+cd /Users/apple/Desktop/ex_project_10/mtips5s_note_lm_pro
+set -a
+source .env.vps
+set +a
+
+SSHPASS="$DEPLOY_PASSWORD" sshpass -e ssh \
+  -o StrictHostKeyChecking=no \
+  -o UserKnownHostsFile=/tmp/notebooklm_known_hosts \
+  "$DEPLOY_USER@$DEPLOY_HOST" \
+  'cd /root/mtips5s_note_lm_pro/deploy && docker compose -f docker-compose.yml -f docker-compose.vps.yml -f docker-compose.web.yml restart notebooklm-mcp notebooklm-web-api'
+```
+
+## 6. Check Docker health
+
+```bash
+cd /Users/apple/Desktop/ex_project_10/mtips5s_note_lm_pro
+set -a
+source .env.vps
+set +a
+
+SSHPASS="$DEPLOY_PASSWORD" sshpass -e ssh \
+  -o StrictHostKeyChecking=no \
+  -o UserKnownHostsFile=/tmp/notebooklm_known_hosts \
+  "$DEPLOY_USER@$DEPLOY_HOST" \
+  'docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" | grep -E "notebooklm|NAMES"'
+```
+
+Expected:
+- `notebooklm-mcp` is healthy
+- `notebooklm-web-api` is healthy
+
+## 7. Reload public nginx proxy after container recreate
+
+Run this after `docker compose up -d --build`, `restart`, or any operation that recreates
+`notebooklm-mcp` / `notebooklm-web-api`.
+
+Why: nginx resolves Docker upstream names when it loads config. If a container is recreated,
+its Docker IP can change. Without reloading nginx, public `/mcp` can return `502 Bad Gateway`
+even though the MCP container is healthy.
+
+```bash
+cd /Users/apple/Desktop/ex_project_10/mtips5s_note_lm_pro
+set -a
+source .env.vps
+set +a
+
+SSHPASS="$DEPLOY_PASSWORD" sshpass -e ssh \
+  -o StrictHostKeyChecking=no \
+  -o UserKnownHostsFile=/tmp/notebooklm_known_hosts \
+  "$DEPLOY_USER@$DEPLOY_HOST" \
+  'docker exec webserver nginx -t && docker exec webserver sh -lc "kill -HUP 1"'
+```
+
+## 8. Smoke test MCP auth tools inside container
+
+```bash
+cd /Users/apple/Desktop/ex_project_10/mtips5s_note_lm_pro
+set -a
+source .env.vps
+set +a
+
+SSHPASS="$DEPLOY_PASSWORD" sshpass -e ssh \
+  -o StrictHostKeyChecking=no \
+  -o UserKnownHostsFile=/tmp/notebooklm_known_hosts \
+  "$DEPLOY_USER@$DEPLOY_HOST" \
+  'docker exec -i notebooklm-mcp python3 - <<'"'"'PY'"'"'
+import asyncio
+import json
+
+from fastmcp import Client
+from notebooklm.mcp.server import create_server
+
+
+async def main():
+    async with Client(create_server()) as client:
+        tools = await client.list_tools()
+        info = await client.call_tool("server_info", {})
+        relogin = await client.call_tool("auth_relogin", {})
+
+    names = {tool.name for tool in tools}
+    payload = {
+        "tool_count": len(names),
+        "has_auth_relogin": "auth_relogin" in names,
+        "server_info_authenticated": info.structured_content["auth"]["authenticated"],
+        "server_info_client_ready": info.structured_content["auth"].get("client_ready"),
+        "auth_relogin_status": relogin.structured_content.get("status"),
+        "auth_relogin_authenticated": relogin.structured_content["auth"]["authenticated"],
+        "auth_relogin_client_ready": relogin.structured_content["auth"].get("client_ready"),
+    }
+    print(json.dumps(payload, indent=2, sort_keys=True))
+
+
+asyncio.run(main())
+PY'
+```
+
+Expected good result:
+- `tool_count` is `38` or higher
+- `has_auth_relogin` is `true`
+- `server_info_authenticated` is `true`
+- `server_info_client_ready` is `true`
+- `auth_relogin_status` is `ok`
+- `auth_relogin_authenticated` is `true`
+- `auth_relogin_client_ready` is `true`
+
+## 9. Smoke test public endpoints
+
+Public REST `/v1/notebooks` should return notebooks. With the current VPS bypass setting,
+public MCP `/mcp` should be reachable by an MCP client without a bearer token. A raw GET may
+return `400`/`406` because it is not a full MCP streamable-HTTP request.
+
+```bash
+python3 - <<'PY'
+import json
+import urllib.error
+import urllib.request
+
+for path in ["/v1/notebooks", "/mcp"]:
+    req = urllib.request.Request("https://notebooklm.1nutnhan.com" + path)
+    if path == "/mcp":
+        req.add_header("Accept", "application/json, text/event-stream")
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            body = resp.read().decode("utf-8", "replace")
+            if path == "/v1/notebooks":
+                payload = json.loads(body)
+                print(path, resp.status, "count", len(payload.get("notebooks", [])))
+            else:
+                print(path, resp.status, resp.headers.get("www-authenticate"))
+    except urllib.error.HTTPError as exc:
+        print(path, exc.code, exc.headers.get("www-authenticate"))
+PY
+```
+
+Expected:
+- `/v1/notebooks` returns `200` and a notebook count
+- `/mcp` no longer returns `401 Bearer` when `NOTEBOOKLM_MCP_AUTH_BYPASS=1`
+
+## Notes for agents
+
+- If MCP starts but auth is degraded, call the MCP tool `server_info` first.
+- If `server_info.auth.client_ready` is false, call `auth_relogin`.
+- If `auth_relogin` returns `needs_login`, the saved cookie/session is expired. Run steps 1-7.
+- If Docker health stays `starting` or `unhealthy`, inspect logs:
+
+```bash
+cd /Users/apple/Desktop/ex_project_10/mtips5s_note_lm_pro
+set -a
+source .env.vps
+set +a
+
+SSHPASS="$DEPLOY_PASSWORD" sshpass -e ssh \
+  -o StrictHostKeyChecking=no \
+  -o UserKnownHostsFile=/tmp/notebooklm_known_hosts \
+  "$DEPLOY_USER@$DEPLOY_HOST" \
+  'cd /root/mtips5s_note_lm_pro/deploy && docker compose -f docker-compose.yml -f docker-compose.vps.yml -f docker-compose.web.yml logs --tail=100 notebooklm-mcp notebooklm-web-api'
+```

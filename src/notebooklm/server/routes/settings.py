@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import os
+import subprocess
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any
 
@@ -14,6 +17,7 @@ from ..._app.language import (
     is_supported_language,
     language_name,
 )
+from ..._logging import scrub_secrets
 from ...io import atomic_update_json
 from ...paths import get_config_path, get_home_dir
 
@@ -21,6 +25,9 @@ __all__ = ["router"]
 
 router = APIRouter(prefix="/settings", tags=["settings"])
 SERVER_NAME = "notebooklm-server"
+LOGIN_COMMAND = ("notebooklm", "login")
+LOGIN_TIMEOUT_SECONDS = 330
+LOGIN_OUTPUT_LIMIT = 12_000
 
 
 class LanguageUpdate(BaseModel):
@@ -41,6 +48,26 @@ def _language_store() -> LanguageConfigStore:
         config_path=get_config_path,
         ensure_home=get_home_dir,
         atomic_update=atomic_update_json,
+    )
+
+
+def _clip_output(value: str) -> str:
+    scrubbed = scrub_secrets(value or "")
+    if len(scrubbed) <= LOGIN_OUTPUT_LIMIT:
+        return scrubbed
+    return scrubbed[:LOGIN_OUTPUT_LIMIT] + "\n...[output truncated]"
+
+
+def _run_login_command() -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    env.pop("NOTEBOOKLM_AUTH_JSON", None)
+    return subprocess.run(
+        LOGIN_COMMAND,
+        check=False,
+        capture_output=True,
+        env=env,
+        text=True,
+        timeout=LOGIN_TIMEOUT_SECONDS,
     )
 
 
@@ -84,4 +111,53 @@ async def check_update() -> dict[str, Any]:
         "update_available": False,
         "channel": "local",
         "message": "Local build is running; no remote update feed is configured.",
+    }
+
+
+@router.post("/login")
+async def run_login() -> dict[str, Any]:
+    """Run ``notebooklm login`` in the server environment.
+
+    This is a single-tenant operator action for the hosted web UI. The command is
+    bounded so a browser-login prompt cannot hold the HTTP worker forever.
+    """
+    try:
+        result = await asyncio.to_thread(_run_login_command)
+    except subprocess.TimeoutExpired as exc:
+        stdout = (
+            exc.stdout.decode("utf-8", "replace") if isinstance(exc.stdout, bytes) else exc.stdout
+        )
+        stderr = (
+            exc.stderr.decode("utf-8", "replace") if isinstance(exc.stderr, bytes) else exc.stderr
+        )
+        return {
+            "ok": False,
+            "status": "timeout",
+            "command": " ".join(LOGIN_COMMAND),
+            "returncode": None,
+            "timed_out": True,
+            "timeout_seconds": LOGIN_TIMEOUT_SECONDS,
+            "stdout": _clip_output(stdout or ""),
+            "stderr": _clip_output(stderr or ""),
+        }
+    except OSError as exc:
+        return {
+            "ok": False,
+            "status": "failed_to_start",
+            "command": " ".join(LOGIN_COMMAND),
+            "returncode": None,
+            "timed_out": False,
+            "stdout": "",
+            "stderr": _clip_output(str(exc)),
+        }
+
+    return {
+        "ok": result.returncode == 0,
+        "status": "ok" if result.returncode == 0 else "failed",
+        "command": " ".join(LOGIN_COMMAND),
+        "returncode": result.returncode,
+        "timed_out": False,
+        "timeout_seconds": LOGIN_TIMEOUT_SECONDS,
+        "stdout": _clip_output(result.stdout),
+        "stderr": _clip_output(result.stderr),
     }

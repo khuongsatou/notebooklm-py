@@ -1,4 +1,4 @@
-"""Bearer-token auth for the remote (HTTP) MCP transport.
+"""Static and dashboard-managed bearer auth for remote HTTP MCP transport.
 
 The stdio transport is local and unauthenticated (FastMCP skips auth for stdio).
 The HTTP transport, once bound to a non-loopback interface, fronts a full-account
@@ -31,6 +31,8 @@ import os
 
 from fastmcp.server.auth import AccessToken, AuthProvider, TokenVerifier
 
+from ._managed_keys import ManagedKeyStore
+
 __all__ = [
     "MCP_TOKEN_ENV",
     "McpBearerAuthProvider",
@@ -62,21 +64,28 @@ def get_configured_token() -> str | None:
 
 
 class McpBearerAuthProvider(TokenVerifier):
-    """Gate the HTTP transport on a single bearer token (constant-time compare).
+    """Gate HTTP on a static token and/or revocable managed keys.
 
     FastMCP runs :meth:`verify_token` for every request via its
-    ``RequireAuthMiddleware``; a ``None`` return is a 401. The instance holds only
-    the **SHA-256 digest** of the configured token, never the cleartext — so
-    ``vars(provider)`` / a scope dump cannot surface it — and verification hashes
-    the presented token and compares digests in constant time.
+    ``RequireAuthMiddleware``; a ``None`` return is a 401. Static auth retains only
+    a SHA-256 digest. Managed auth reads the shared hash-only store on every request
+    so revocation takes effect immediately.
     """
 
-    def __init__(self, token: str) -> None:
+    def __init__(
+        self,
+        token: str | None = None,
+        *,
+        managed_store: ManagedKeyStore | None = None,
+    ) -> None:
         super().__init__()
+        if not token and managed_store is None:
+            raise ValueError("A static token or managed-key store is required")
         # Store only a digest of the configured token (its raw UTF-8 bytes hashed).
         # The digest is non-reversible and cannot be replayed as a token (verify
         # hashes the *presented* value), so no cleartext copy is retained anywhere.
-        self.__digest = hashlib.sha256(token.encode("utf-8")).digest()
+        self.__digest = hashlib.sha256(token.encode("utf-8")).digest() if token else None
+        self.__managed_store = managed_store
 
     async def verify_token(self, token: str) -> AccessToken | None:
         # Starlette latin-1-decodes the Authorization header, so ``token`` here is
@@ -89,29 +98,64 @@ class McpBearerAuthProvider(TokenVerifier):
             presented = token.encode("latin-1")
         except UnicodeEncodeError:
             return None
-        if hmac.compare_digest(hashlib.sha256(presented).digest(), self.__digest):
+        presented_digest = hashlib.sha256(presented).digest()
+        static_match = self.__digest is not None and hmac.compare_digest(
+            presented_digest, self.__digest
+        )
+        managed_match = None
+        if not static_match and self.__managed_store is not None:
+            managed_match = self.__managed_store.authenticate_hash(presented_digest.hex())
+        if static_match or managed_match is not None:
             # Do NOT echo the live token into the AccessToken: FastMCP stores it on
             # the request scope (scope["user"]) and AccessToken's pydantic repr
             # would expose it in any scope/log dump. We never read the field, so
             # stamp an opaque constant instead.
-            return AccessToken(token=_CLIENT_ID, client_id=_CLIENT_ID, scopes=[])
+            if managed_match is not None:
+                key_id = str(managed_match["id"])
+                return AccessToken(
+                    token=_CLIENT_ID,
+                    client_id=f"managed:{key_id}",
+                    scopes=[],
+                    claims={
+                        "auth_type": "managed",
+                        "key_id": key_id,
+                        "key_prefix": str(managed_match["prefix"]),
+                    },
+                )
+            return AccessToken(
+                token=_CLIENT_ID,
+                client_id=_CLIENT_ID,
+                scopes=[],
+                claims={"auth_type": "environment"},
+            )
         return None
 
     def __repr__(self) -> str:  # never surface auth material
         return f"{type(self).__name__}(token=<redacted>)"
 
 
-def build_auth_provider(token: str | None) -> McpBearerAuthProvider | None:
-    """Return a provider for a non-empty ``token``, else ``None`` (no auth).
+def build_auth_provider(
+    token: str | None,
+    managed_store: ManagedKeyStore | None = None,
+) -> McpBearerAuthProvider | None:
+    """Return a provider when static or managed bearer auth is configured.
 
     The caller (``__main__`` on the http path) resolves the token and, when the
     bind is network-reachable, refuses to start without one; this helper only
     maps token→provider so ``create_server`` stays env-free.
     """
-    return McpBearerAuthProvider(token) if token else None
+    return (
+        McpBearerAuthProvider(token, managed_store=managed_store)
+        if token or managed_store
+        else None
+    )
 
 
-def build_auth(token: str | None, oauth: AuthProvider | None) -> AuthProvider | None:
+def build_auth(
+    token: str | None,
+    oauth: AuthProvider | None,
+    managed_store: ManagedKeyStore | None = None,
+) -> AuthProvider | None:
     """Compose the active auth provider for ``create_server(auth=...)``.
 
     * bearer + oauth → ``MultiAuth`` (claude.ai uses OAuth, Claude Code the bearer;
@@ -122,7 +166,7 @@ def build_auth(token: str | None, oauth: AuthProvider | None) -> AuthProvider | 
 
     IdP-agnostic: ``oauth`` is any ``AuthProvider`` (here the self-hosted OAuth server).
     """
-    bearer = build_auth_provider(token)
+    bearer = build_auth_provider(token, managed_store)
     if oauth and bearer:
         from fastmcp.server.auth import MultiAuth
 

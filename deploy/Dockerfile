@@ -22,8 +22,15 @@ COPY . /src
 RUN if [ -n "$NOTEBOOKLM_SPEC" ]; then \
         pip install --no-cache-dir "$NOTEBOOKLM_SPEC"; \
     else \
-        pip install --no-cache-dir "/src[mcp,headless,server]"; \
+        pip install --no-cache-dir "/src[browser,mcp,headless,server]"; \
     fi
+
+# The hosted web UI exposes an operator button that runs `notebooklm login` in
+# the server container. Preinstall Chromium and its Linux libraries so that
+# command can start the Playwright login flow on VPS hosts.
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+RUN python -m playwright install --with-deps chromium && \
+    chmod -R a+rX /ms-playwright
 
 # Run as a non-root user; the mounted profile dir must be writable by this uid
 # (keepalive/recovery rotates cookies into storage_state.json).

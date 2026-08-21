@@ -16,8 +16,8 @@ Design highlights:
   tokenless, so all three are disabled.
 - **``/healthz`` is public, ``/v1`` is authed.** Health lives outside ``/v1`` so
   a liveness probe needs no token; it returns only ``{"ok": true}`` (no version
-  or account info). Every ``/v1`` route is gated by the bearer-token +
-  loopback-Host dependency (see :mod:`._auth`).
+  or account info). Every ``/v1`` route is gated by a machine bearer or signed
+  dashboard session plus the loopback-Host dependency (see :mod:`._auth`).
 
 This module imports NO ``click`` / ``rich`` / ``cli``.
 """
@@ -27,16 +27,30 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from importlib.metadata import PackageNotFoundError, version
-from typing import cast
+from typing import Any, cast
 
 from fastapi import APIRouter, Depends, FastAPI, Request, Response
 
 from ..client import NotebookLMClient
+from ..exceptions import AuthError
 from ._auth import require_auth
 from ._context import AppState
 from ._errors import http_error_response, install_exception_handlers
 from ._pending import PendingRegistry
-from .routes import artifacts, chat, labels, notebooks, notes, research, settings, share, sources
+from .routes import (
+    artifacts,
+    chat,
+    cookie_sync,
+    dashboard_auth,
+    labels,
+    mcp_keys,
+    notebooks,
+    notes,
+    research,
+    settings,
+    share,
+    sources,
+)
 from .routes.sources import MAX_UPLOAD_BYTES
 
 __all__ = ["SERVER_NAME", "create_app"]
@@ -47,6 +61,19 @@ SERVER_NAME = "notebooklm-server"
 #: factory binds ``NotebookLMClient.from_storage()``; tests inject a factory
 #: yielding a fake client so no real auth/network is needed.
 ClientFactory = Callable[[], AbstractAsyncContextManager[NotebookLMClient]]
+
+
+class _UnavailableClient:
+    """Fail closed while keeping cookie recovery routes alive after auth expiry."""
+
+    def __init__(self, reason: str) -> None:
+        self._reason = reason
+
+    def __getattr__(self, _name: str) -> Any:
+        raise AuthError(f"NotebookLM authentication is unavailable: {self._reason}")
+
+    async def close(self, *, drain: bool = True) -> None:
+        del drain
 
 
 def _default_factory() -> AbstractAsyncContextManager[NotebookLMClient]:
@@ -75,12 +102,22 @@ def create_app(*, client_factory: ClientFactory | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        async with factory() as client:
-            app.state.notebooklm = AppState(client=client, pending=PendingRegistry())
-            try:
-                yield
-            finally:
-                app.state.notebooklm = None
+        manager = factory()
+        entered = False
+        try:
+            client = await manager.__aenter__()
+            entered = True
+        except Exception as exc:
+            if client_factory is not None:
+                raise
+            client = cast("NotebookLMClient", _UnavailableClient(str(exc)))
+        app.state.notebooklm = AppState(client=client, pending=PendingRegistry())
+        try:
+            yield
+        finally:
+            app.state.notebooklm = None
+            if entered:
+                await manager.__aexit__(None, None, None)
 
     app = FastAPI(
         title=SERVER_NAME,
@@ -127,7 +164,10 @@ def create_app(*, client_factory: ClientFactory | None = None) -> FastAPI:
         """Liveness probe — public, no token, no version/account info."""
         return {"ok": True}
 
-    # Every /v1 route requires the bearer-token + loopback-Host dependency.
+    app.include_router(cookie_sync.router)
+    app.include_router(dashboard_auth.router)
+
+    # Every /v1 route requires bearer/session auth plus the loopback-Host dependency.
     v1 = APIRouter(prefix="/v1", dependencies=[Depends(require_auth)])
 
     @v1.get("/status")
@@ -142,6 +182,7 @@ def create_app(*, client_factory: ClientFactory | None = None) -> FastAPI:
     v1.include_router(notebooks.router)
     v1.include_router(sources.router)
     v1.include_router(labels.router)
+    v1.include_router(mcp_keys.router)
     v1.include_router(research.router)
     v1.include_router(settings.router)
     v1.include_router(notes.router)

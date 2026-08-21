@@ -377,11 +377,16 @@ Configuration is read from `NOTEBOOKLM_SERVER_*` env vars (overridable by the ma
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `NOTEBOOKLM_SERVER_TOKEN` | *(unset)* | Bearer token every request must present. **Required** — fail-closed if unset. |
+| `NOTEBOOKLM_DASHBOARD_PASSWORD` | *(unset)* | Enables browser dashboard login. The production Compose example uses `123`; change it on public deployments. |
+| `NOTEBOOKLM_DASHBOARD_SESSION_SECRET` | server token | HMAC secret for rolling 365-day dashboard sessions. Set a separate random value in production. |
 | `NOTEBOOKLM_SERVER_HOST` | `127.0.0.1` | Bind host. Non-loopback is refused unless the elevated-risk override below is set. |
 | `NOTEBOOKLM_SERVER_PORT` | `8000` | Bind port. |
 | `NOTEBOOKLM_SERVER_ALLOW_EXTERNAL_BIND` | *(unset)* | ⚠️ Set to `1` to bind a non-loopback interface. Only behind a trusted reverse proxy — this exposes account-fronting credentials to the network. |
 
-**Surface:** every route is under `/v1` and requires `Authorization: Bearer <token>` plus a loopback `Host` header (a DNS-rebinding guard). `/healthz` is the one public, token-less route. The auto-generated `/docs` / `/openapi.json` schema UI is disabled (it would otherwise be reachable token-less).
+**Surface:** machine clients authenticate to `/v1` with `Authorization: Bearer <token>`;
+the browser exchanges `NOTEBOOKLM_DASHBOARD_PASSWORD` at `/auth/login` for a signed
+HttpOnly session cookie. Both paths also require a loopback `Host` header behind the
+trusted proxy. `/healthz` is public and the schema UI is disabled.
 
 <!-- not mirrored: REST-server curl examples (end-user/automation tooling); not part of the contributor install flow. -->
 ```bash
@@ -477,7 +482,7 @@ Wire it into an MCP client with either:
 - `notebooklm mcp install <client>` — auto-writes the server config for `claude-desktop`, `claude-code`, `cursor`, or `windsurf`; or
 - the one-click `.mcpb` desktop bundle built from `desktop-extension/` (Claude Desktop's "Install Extension").
 
-Full usage walkthrough (auth, transports, the 37 tools, workflows, troubleshooting): **[mcp-guide.md](mcp-guide.md)**.
+Full usage walkthrough (auth, transports, the 38 tools, workflows, troubleshooting): **[mcp-guide.md](mcp-guide.md)**.
 
 ---
 

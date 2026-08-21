@@ -1,8 +1,14 @@
 services:
   notebooklm-mcp:
     container_name: notebooklm-mcp
+    ports:
+      - "127.0.0.1:${NOTEBOOKLM_MCP_HOST_PORT:-9420}:9420"
     networks:
       - mtips5s-proxy
+
+  notebooklm-web-api:
+    ports:
+      - "127.0.0.1:${NOTEBOOKLM_SERVER_HOST_PORT:-8000}:8000"
 
 networks:
   mtips5s-proxy:

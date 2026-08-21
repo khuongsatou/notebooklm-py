@@ -117,12 +117,167 @@ export type SettingsState = {
   languages: Record<string, string>;
 };
 
+export type McpFeature = {
+  id: string;
+  label: string;
+  description?: string;
+  tools: string[];
+};
+
+export type McpConfig = {
+  ok: boolean;
+  product: {
+    name: string;
+    slug: string;
+    description?: string;
+  };
+  endpoint: string;
+  transport: string;
+  protocolVersion: string;
+  auth: {
+    type: string;
+    header: string;
+    valuePrefix?: string;
+  };
+  features: McpFeature[];
+};
+
+export type McpApiKey = {
+  id: string;
+  name: string;
+  prefix: string;
+  status: "active" | "revoked";
+  createdAt: string;
+  createdBy: string;
+  lastUsedAt: string;
+  revokedAt: string;
+  legacy: boolean;
+};
+
+export type McpKeyList = {
+  ok: boolean;
+  keys: McpApiKey[];
+};
+
+export type McpKeyIssued = {
+  ok: boolean;
+  apiKey: string;
+  key: McpApiKey;
+};
+
+export type McpUsagePeriodName = "today" | "7d" | "30d";
+
+export type McpUsageEvent = {
+  id: string;
+  tool: string;
+  operation: "create" | "download" | "other";
+  status: "success" | "failed";
+  keyId: string;
+  keyPrefix: string;
+  latencyMs: number;
+  errorCode: string;
+  createdAt: string;
+  dateKey: string;
+};
+
+export type McpUsagePoint = {
+  date: string;
+  createRequested: number;
+  createSuccess: number;
+  createFailed: number;
+  downloadSuccess: number;
+};
+
+export type McpUsage = {
+  ok: boolean;
+  period: {
+    name: McpUsagePeriodName;
+    from: string;
+    to: string;
+    timeZone: string;
+  };
+  summary: {
+    createRequested: number;
+    createSuccess: number;
+    createFailed: number;
+    downloadSuccess: number;
+    dailyLimit: number;
+    dailyUsed: number;
+    dailyReserved: number;
+    dailyRemaining: number;
+    dailyResetAt: string;
+  };
+  series: McpUsagePoint[];
+  recent: McpUsageEvent[];
+};
+
 export type UpdateStatus = {
   current_version: string;
   latest_version: string;
   update_available: boolean;
   channel: string;
   message: string;
+};
+
+export type LoginCommandResult = {
+  ok: boolean;
+  status: string;
+  command: string;
+  returncode: number | null;
+  timed_out: boolean;
+  timeout_seconds?: number;
+  stdout: string;
+  stderr: string;
+};
+
+export type LocalCommandResult = {
+  ok: boolean;
+  command: string;
+  returncode: number | null;
+  timed_out: boolean;
+  timeout_seconds: number;
+  stdout: string;
+  stderr: string;
+};
+
+export type VpsConnectionStatus = {
+  ok: boolean;
+  status: string;
+  connected: boolean;
+  profile_ready?: boolean;
+  cookie_count?: number;
+  notebook_count?: number | null;
+  repaired?: boolean;
+  repair_sync?: DriveDownCookiesResponse | null;
+  error?: string | null;
+};
+
+export type LocalLoginSyncResult = {
+  ok: boolean;
+  status: string;
+  profile?: string;
+  storage_path?: string;
+  setup?: LocalCommandResult | null;
+  retried?: boolean;
+  fresh_retried?: boolean;
+  login?: LocalCommandResult;
+  sync?: DriveDownCookiesResponse | null;
+  connected?: VpsConnectionStatus | null;
+  error?: string;
+};
+
+export type LocalLoginResetResult = {
+  ok: boolean;
+  status: string;
+  profile?: string;
+  storage_path?: string;
+  browser_profile_path?: string;
+  storage_exists?: boolean;
+  browser_profile_existed?: boolean;
+  browser_profile_deleted?: boolean;
+  browser_profile_error?: string | null;
+  logout?: LocalCommandResult;
+  error?: string;
 };
 
 export type Job = {
@@ -152,6 +307,10 @@ export type VerificationRecord = {
 
 export type DesktopBridge = {
   getAppInfo(): Promise<AppInfo>;
+  restartBackend?(): Promise<AppInfo>;
+  localLoginAndSync?(): Promise<LocalLoginSyncResult>;
+  resetLocalLogin?(): Promise<LocalLoginResetResult>;
+  checkVpsConnected?(): Promise<VpsConnectionStatus>;
   backendRequest<T = unknown>(request: {
     path: string;
     method?: string;
@@ -169,8 +328,34 @@ export type DesktopBridge = {
   onBackendStatus(callback: (payload: BackendStatus) => void): () => void;
 };
 
+export type DriveDownCookiesResponse = {
+  ok: boolean;
+  error?: string;
+  status?: string;
+  server?: string;
+  extension_version?: string;
+  cookie_count?: number;
+  received_count?: number;
+  persisted_count?: number;
+  client_reloaded?: boolean;
+  auth_verified?: boolean;
+  restart_required?: boolean;
+};
+
+export type ExternalExtensionRuntime = {
+  lastError?: { message?: string };
+  sendMessage(
+    extensionId: string,
+    message: Record<string, unknown>,
+    callback: (response?: DriveDownCookiesResponse) => void,
+  ): void;
+};
+
 declare global {
   interface Window {
     notebooklmDesktop?: DesktopBridge;
+    chrome?: {
+      runtime?: ExternalExtensionRuntime;
+    };
   }
 }

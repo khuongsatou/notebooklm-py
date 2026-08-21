@@ -688,8 +688,8 @@ The single-tenant REST server is the third adapter (ADR-0021), opt-in behind the
 `server` extra and **experimental**. A FastAPI app maps `/v1` routes onto the
 `_app/` cores and the public client namespaces, with one `NotebookLMClient` opened
 once at the ASGI lifespan inside the server loop (honoring the ADR-0004 loop-
-affinity contract). Every `/v1` request requires a static bearer token
-(constant-time compare) plus a loopback `Host` literal (a DNS-rebinding guard);
+affinity contract). Every `/v1` request requires either a static machine bearer
+or a signed dashboard session cookie, plus a loopback `Host` literal;
 `/healthz` is the one public route, and the `/docs` / `/openapi.json` schema
 surface is disabled. Long-running work (source ingest, artifact generation) uses
 the **poll-the-resource** model — the create call returns immediately and the
@@ -1193,7 +1193,7 @@ src/notebooklm/
 │       ├── artifacts.py         # artifact_list/generate/status/download/rename/delete (enum dispatch over _app.generate + _app.download; stateless poll via _app.artifacts.poll_artifact; rename/delete over _app.artifacts kind-aware cores)
 │       ├── research.py          # research_start (client.research.start) + research_status (_app.research.poll_and_classify) + research_import
 │       ├── sharing.py           # share_status/set_access/set_user/remove_user (thin adapters over client.sharing; set_access folds public+view_level, set_user upserts add/update; string-labeled enums; view_level surfaced only when set)
-│       └── meta.py              # server_info — package version + auth-health over _app.auth_check (no notebook arg)
+│       └── meta.py              # server_info + auth_relogin — auth-health/action over _app.auth_check
 ├── rpc/                         # RPC protocol layer
 │   ├── types.py                 # Method IDs and enums
 │   ├── encoder.py               # Request encoding

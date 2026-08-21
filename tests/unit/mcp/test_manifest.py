@@ -5,7 +5,7 @@ in-memory FastMCP ``Client``, then pins:
 
 * the EXACT set of tool names — so a tool can't be silently added, removed, or
   renamed without updating this gate;
-* a tool-count ceiling (40): the current surface is 37 tools; the next tool
+* a tool-count ceiling (40): the current surface is 38 tools; the next tool
   stays under the ceiling, but an accidental explosion still trips the gate;
 * the ``destructiveHint`` annotation + a ``confirm`` parameter on every
   destructive (delete) tool; and
@@ -23,7 +23,7 @@ import pytest
 pytest.importorskip("fastmcp")
 
 
-#: The complete, pinned tool surface. 37 tools across 8 domains. Adding or
+#: The complete, pinned tool surface. 38 tools across 8 domains. Adding or
 #: removing a tool MUST update this set (and the ceiling below if it grows).
 EXPECTED_TOOLS: frozenset[str] = frozenset(
     {
@@ -70,14 +70,16 @@ EXPECTED_TOOLS: frozenset[str] = frozenset(
         "share_set_access",
         "share_set_user",
         "share_remove_user",
-        # Meta (1)
+        # Meta (2)
         "server_info",
+        "auth_relogin",
     }
 )
 
 #: Tool-count ceiling. The design target is ~25; the sharing domain (#1684) took
 #: the surface to 34, the artifact get-prompt/retry tools took it to 36, and
-#: suggest_prompts to 37. The ceiling has headroom for a few more tools, but an
+#: suggest_prompts to 37, and auth_relogin to 38. The ceiling has headroom for
+#: a few more tools, but an
 #: accidental explosion still trips the gate.
 TOOL_CEILING = 40
 
@@ -106,6 +108,16 @@ READ_ONLY_TOOLS: frozenset[str] = frozenset(
         "server_info",
     }
 )
+
+
+def test_usage_classification_is_manifest_driven() -> None:
+    from notebooklm.mcp._integration import mcp_usage_config
+
+    usage = mcp_usage_config()
+    assert usage["enabled"] is True
+    assert "note_create" in usage["create_tools"]
+    assert "artifact_download" in usage["download_tools"]
+    assert usage["daily_create_limit"] > 0
 
 
 @pytest.fixture

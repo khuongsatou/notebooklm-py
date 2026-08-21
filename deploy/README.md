@@ -6,7 +6,7 @@ manage. Single-tenant, self-hosted.
 
 > ⚠️ **Use a dedicated / throwaway Google account.** The mounted
 > `master_token.json` is a durable, full-account credential. Treat the mounted profile dir
-> and `.env` as secrets (both are gitignored).
+> and environment files as secrets (both are gitignored).
 
 ## Prerequisites
 - Docker + Docker Compose.
@@ -24,7 +24,7 @@ owned by you (your `notebooklm` CLI keeps working) and are readable/writable wit
 no permission dance.
 
 - **Default:** mounts `~/.notebooklm/profiles/default`.
-- **Other profile:** set `NOTEBOOKLM_PROFILE_DIR` in `.env` (e.g. a
+- **Other profile:** set `NOTEBOOKLM_PROFILE_DIR` in the selected env file (e.g. a
   dedicated/throwaway profile — recommended, since `master_token.json` is a
   full-account credential).
 
@@ -32,14 +32,25 @@ The dir is mounted **read-write** because the server re-mints/rotates cookies in
 `storage_state.json` (+ its `.lock`) — a read-only mount makes the session die
 ~1 h in. Running as your uid is what makes that write work without a chown.
 (`make` fills your uid/gid from `id` automatically; for raw `docker compose`, set
-`NOTEBOOKLM_UID`/`NOTEBOOKLM_GID` in `.env`.)
+`NOTEBOOKLM_UID`/`NOTEBOOKLM_GID` in the selected env file.)
 
 ## 2. Configure secrets
 ```bash
-cp deploy/.env.example deploy/.env
+cp deploy/.env.development.example deploy/.env.development
+cp deploy/.env.production.example deploy/.env.production
 # NOTEBOOKLM_MCP_TOKEN: python -c "import secrets; print(secrets.token_urlsafe(32))"
+# Dashboard-issued managed keys are enabled by default. The web API and MCP service
+# must mount the same NOTEBOOKLM profile so they share mcp_api_keys.json and
+# mcp_usage.json. NOTEBOOKLM_MCP_DAILY_CREATE_LIMIT defaults to 100 successes/day.
 # CF_TUNNEL_TOKEN: from the Cloudflare dashboard (next step)
 ```
+
+`make dev` reads `deploy/.env.development`; `make prod` reads
+`deploy/.env.production`. A legacy `deploy/.env` file still works as a fallback
+when the selected file does not exist, but new deployments should keep the two
+environments separate. Use different `NOTEBOOKLM_PROFILE_DIR` values so dev and
+production do not share Google cookies, notebooks, OAuth tokens, or recovery
+state.
 
 ## 3. Choose a tunnel
 The stack ships two tunnel sidecars as Compose **profiles** — pick one (the server
@@ -48,7 +59,7 @@ no host ports are published.
 
 ### 3A. Cloudflare Tunnel (needs a domain in your Cloudflare account)
 In the Cloudflare **Zero Trust** dashboard → **Networks → Tunnels**:
-1. Create a tunnel; copy its **token** into `CF_TUNNEL_TOKEN` in `.env`.
+1. Create a tunnel; copy its **token** into `CF_TUNNEL_TOKEN` in the selected env file.
 2. Add a **Public Hostname** (e.g. `notebooklm.yourdomain.com`) → **Service**
    `http://notebooklm-mcp:9420`. Cloudflare auto-creates the DNS record + serves TLS.
    Route the **whole host** (path `/`) — not a `/mcp`-scoped ingress — so the root
@@ -67,7 +78,8 @@ per-machine toggles):
    ```json
    { "target": ["*"], "attr": ["funnel"] }
    ```
-3. Create a **normal auth key** (Settings → Keys) and put it in `.env` as `TS_AUTHKEY`.
+3. Create a **normal auth key** (Settings → Keys) and put it in the selected env file
+   as `TS_AUTHKEY`.
    (There is no "Funnel-capable" key type — Funnel comes from the policy in step 2.)
 
 Then the compose `tailscale` sidecar (profile `tailscale`) runs `tailscale/tailscale`
@@ -83,7 +95,8 @@ is `TS_HOSTNAME=notebooklm-mcp`, so your public origin is
 > `/config`) per Tailscale's Docker requirement. Not live-verified in this repo —
 > check `docker compose --profile tailscale logs tailscale` for the served URL on first run.
 
-Then set the matching **OAuth base URL** in `.env` (bare origin — see step 6):
+Then set the matching **OAuth base URL** in the selected env file (bare origin — see
+step 6):
 ```
 # Cloudflare:  NOTEBOOKLM_MCP_OAUTH_BASE_URL=https://notebooklm.yourdomain.com
 # Tailscale:   NOTEBOOKLM_MCP_OAUTH_BASE_URL=https://notebooklm-mcp.<your-tailnet>.ts.net
@@ -98,17 +111,33 @@ cd deploy
 make dev                       # build THIS checkout + start (Cloudflare tunnel, default)
 make dev TUNNEL=tailscale      # ...with the Tailscale Funnel sidecar instead
 make prod VERSION=0.8.0        # build + install a published PyPI release and start
+make restart ENV=production    # restart/rebuild using .env.production
 make logs                      # tail the server log (expect: bound 0.0.0.0:9420)
-make restart                   # rebuild + recreate after a source/config change
-make down                      # stop and remove (pass the same TUNNEL you started with)
+make restart                   # rebuild + recreate dev after a source/config change
+make down ENV=production       # stop/remove prod (pass same ENV/TUNNEL you started with)
 ```
 
 Equivalent raw compose (`--profile` selects the tunnel; build context is the repo root):
-- **Cloudflare, from source:** `docker compose --profile cloudflare up -d --build`
-- **Tailscale, from source:** `docker compose --profile tailscale up -d --build`
+- **Cloudflare, from source:** `docker compose --env-file .env.development --profile cloudflare up -d --build`
+- **Tailscale, from source:** `docker compose --env-file .env.development --profile tailscale up -d --build`
 - **From a published release:** add `--build-arg
   NOTEBOOKLM_SPEC="notebooklm-py[mcp,headless]==0.8.0"` to the build (or uncomment
-  `build.args.NOTEBOOKLM_SPEC` in `docker-compose.yml`).
+  `build.args.NOTEBOOKLM_SPEC` in `docker-compose.yml`) and use
+  `--env-file .env.production`.
+
+### Sync this checkout to the VPS
+
+Use the checked-in rsync wrapper instead of a raw `rsync` command:
+
+```bash
+scripts/sync_vps_source.sh          # dry run
+scripts/sync_vps_source.sh --apply  # sync to root@45.32.63.217:/root/mtips5s_note_lm_pro/
+```
+
+The wrapper always loads `.rsyncignore`, which keeps heavy/generated folders
+(`course/`, `workflows/`, `desktop/build/`, caches, virtualenvs, media archives)
+and local secrets out of the VPS source tree. It does not delete remote files by
+default; pass `--delete` only when intentionally pruning files on the server.
 
 ## 5. Connect from Claude Code
 ```bash
@@ -125,7 +154,7 @@ IdP, the server runs its own tiny OAuth authorization server gated by **one pass
 **Opt-in and additive** — leave both vars unset to stay bearer-only (Claude Code/Desktop
 unaffected); when set, the bearer and OAuth work side by side on the same `/mcp`.
 
-1. **`.env`** — set a strong password + your public URL (see `.env.example`):
+1. **Selected env file** — set a strong password + your public URL:
    ```
    # a long random secret — the gate (>=16 chars):
    NOTEBOOKLM_MCP_OAUTH_PASSWORD=$(python -c "import secrets;print(secrets.token_urlsafe(24))")
@@ -176,7 +205,7 @@ unaffected); when set, the bearer and OAuth work side by side on the same `/mcp`
   partial/weak/non-https OAuth config.
 - **One container per account.** Do not scale replicas off one master token —
   concurrent re-mints invalidate each other's session.
-- **Rotate the bearer**: change `NOTEBOOKLM_MCP_TOKEN` in `.env`,
+- **Rotate the bearer**: change `NOTEBOOKLM_MCP_TOKEN` in the active env file,
   `docker compose up -d`, and update the `claude mcp add` header.
 - **Files**: the connector moves text/references only. Add device files via
   Google Drive (`source_add` with a Drive id) or the NotebookLM app; consume

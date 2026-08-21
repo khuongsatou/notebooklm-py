@@ -1,0 +1,120 @@
+schema_version: 1
+
+product:
+  name: "NotebookLM Pro"
+  slug: "notebooklm-pro"
+  description: "Connect AI assistants to the NotebookLM Pro research workspace."
+
+endpoints:
+  app_base_url: "https://notebooklm.1nutnhan.com"
+  auth_base_url: "https://notebooklm.1nutnhan.com"
+  api_base_url: "https://notebooklm.1nutnhan.com"
+  mcp_base_url: "https://notebooklm.1nutnhan.com"
+  mcp_path: "/mcp"
+  media_base_url: "https://notebooklm.1nutnhan.com"
+  docs_base_url: "https://github.com/khuongsatou/notebooklm-py/blob/main/docs"
+  health_url: "https://notebooklm.1nutnhan.com/healthz"
+
+mcp:
+  transport: "streamable-http"
+  protocol_version: "2025-03-26"
+  server_id: "notebooklm-pro"
+  auth:
+    type: "header"
+    header: "Authorization"
+    value_prefix: "Bearer"
+    key_prefix: "nlm_mcp_"
+  rate_limit_per_minute: 60
+
+permissions:
+  manage_key: "mcp-key:manage"
+  view_usage: "mcp-usage:read"
+  call_tools: "mcp-tools:call"
+
+features:
+  - id: "notebooks"
+    label: "Notebooks"
+    description: "Create, inspect, rename and remove notebooks."
+    tools:
+      - "notebook_list"
+      - "notebook_create"
+      - "notebook_describe"
+      - "notebook_rename"
+      - "notebook_delete"
+  - id: "sources"
+    label: "Sources"
+    description: "Add, inspect, wait for and manage notebook sources."
+    tools:
+      - "source_list"
+      - "source_get_content"
+      - "source_describe"
+      - "source_rename"
+      - "source_delete"
+      - "source_wait"
+      - "source_add"
+  - id: "chat"
+    label: "Chat"
+    description: "Ask grounded questions and configure notebook chat."
+    tools:
+      - "chat_ask"
+      - "chat_configure"
+      - "suggest_prompts"
+  - id: "studio"
+    label: "Studio"
+    description: "Generate, inspect and download NotebookLM artifacts."
+    tools:
+      - "artifact_list"
+      - "artifact_generate"
+      - "artifact_status"
+      - "artifact_get_prompt"
+      - "artifact_download"
+      - "artifact_rename"
+      - "artifact_retry"
+      - "artifact_delete"
+  - id: "research"
+    label: "Research"
+    description: "Start, monitor, import and cancel research runs."
+    tools:
+      - "research_start"
+      - "research_status"
+      - "research_import"
+      - "research_cancel"
+  - id: "workspace"
+    label: "Workspace"
+    description: "Manage notes, sharing and server state."
+    tools:
+      - "note_create"
+      - "note_get"
+      - "note_list"
+      - "note_update"
+      - "note_delete"
+      - "share_status"
+      - "share_set_access"
+      - "share_set_user"
+      - "share_remove_user"
+      - "server_info"
+      - "auth_relogin"
+
+usage:
+  enabled: true
+  timezone: "Asia/Ho_Chi_Minh"
+  retention_days: 90
+  create_tools:
+    - "notebook_create"
+    - "source_add"
+    - "note_create"
+    - "artifact_generate"
+    - "artifact_retry"
+    - "research_start"
+  download_tools:
+    - "artifact_download"
+  daily_create_limit: 100
+
+result_delivery:
+  allowed_modes:
+    - "inline_json"
+    - "asset_id"
+    - "signed_url"
+    - "server_path"
+  public_default: "inline_json"
+  signed_url_ttl_seconds: 900

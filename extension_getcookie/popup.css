@@ -1,0 +1,293 @@
+html {
+  width: 500px;
+  box-sizing: border-box;
+  font-family: "Arial", sans-serif;
+  background-color: #fdfbff;
+}
+
+body {
+  margin: 8px;
+  width: 484px;
+  font-size: 75%;
+}
+
+h1 {
+  font-size: 1.1rem;
+  font-weight: bold;
+  text-overflow: ellipsis;
+  overflow: hidden;
+  white-space: nowrap;
+  text-align: center;
+}
+
+h1 > a#location {
+  color: #3153ee;
+}
+
+main {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.sync-panel {
+  display: grid;
+  gap: 0.75rem;
+  padding: 0.85rem;
+  border: 1px solid #d9d9e3;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.sync-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.sync-head strong {
+  font-size: 0.92rem;
+}
+
+.sync-toggle {
+  min-width: 4.2rem;
+  border: 0;
+  border-radius: 999px;
+  padding: 0.35rem 0.75rem;
+  font-size: 0.82rem;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+.sync-toggle.on {
+  background: #1f8f4d;
+  color: #fff;
+}
+
+.sync-toggle.off {
+  background: #d7dae3;
+  color: #454b5b;
+}
+
+.sync-mode-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.5rem;
+}
+
+.sync-mode-tile {
+  display: grid;
+  gap: 0.2rem;
+  min-height: 4rem;
+  padding: 0.7rem 0.65rem;
+  border: 1px solid #cdd4e1;
+  border-radius: 8px;
+  background: #fff;
+  color: #283041;
+  text-align: left;
+}
+
+.sync-mode-tile strong {
+  font-size: 0.88rem;
+}
+
+.sync-mode-tile span {
+  color: #667085;
+  font-size: 0.72rem;
+}
+
+.sync-mode-tile.active {
+  border-color: #485fc7;
+  background: rgba(72, 95, 199, 0.08);
+}
+
+.sync-fields {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.sync-fields label {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: #4b5563;
+}
+
+.sync-fields input {
+  width: 100%;
+  border: 1px solid #cdd4e1;
+  border-radius: 8px;
+  padding: 0.55rem 0.65rem;
+  font: inherit;
+}
+
+.checkpoint-note {
+  color: #667085;
+  font-size: 0.7rem;
+}
+
+.sync-status {
+  min-height: 1rem;
+  color: #5b6475;
+  font-size: 0.78rem;
+}
+
+.verify-oauth-link {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  color: #485fc7;
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-decoration: underline;
+}
+
+.sync-status[data-kind="success"] {
+  color: #1f8f4d;
+}
+
+.sync-status[data-kind="warning"] {
+  color: #a15c00;
+}
+
+.sync-status[data-kind="error"] {
+  color: #b42318;
+}
+
+.manual-sync-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 2.6rem;
+  border: 0;
+  border-radius: 8px;
+  background: #1f8f4d;
+  color: #fff;
+  font-size: 0.86rem;
+  font-weight: 700;
+}
+
+.clear-sync-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 2.35rem;
+  border: 1px solid #f1b8b8;
+  border-radius: 8px;
+  background: #fff3f3;
+  color: #b42318;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.manual-sync-btn .button-text,
+.clear-sync-btn .button-text {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.manual-sync-btn:disabled,
+.clear-sync-btn:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.export-btn-container {
+  display: grid;
+  grid-template-rows: 1fr 1fr;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 0.5rem;
+}
+
+.export-btn {
+  border: none;
+  border-radius: 5px;
+  height: 2.5rem;
+  font-size: 0.9rem;
+}
+.export-btn > .button-text {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.2em;
+}
+
+.export-btn:hover {
+  filter: brightness(0.85);
+}
+.export-btn:active {
+  filter: brightness(1.15);
+}
+
+.export-btn.large {
+  grid-column: 1 / 4;
+}
+
+.export-btn.export {
+  background-color: #485fc7;
+  color: white;
+}
+
+.export-btn.export-as {
+  background-color: #fee08a;
+  color: black;
+}
+
+.export-btn.copy,
+.export-btn.export-all {
+  background-color: #3f8ecf;
+  color: white;
+}
+
+/* default text */
+.export-btn.copy {
+  .default-copy-text {
+    display: flex;
+  }
+  .copied-text {
+    display: none;
+  }
+}
+
+/* when copied */
+.export-btn.copy.copied {
+  .default-copy-text {
+    display: none;
+  }
+  .copied-text {
+    display: flex;
+  }
+}
+
+.table-container {
+  width: 100%;
+  max-height: 380px;
+  overflow: scroll;
+}
+
+.netscape-table {
+  border-collapse: collapse;
+}
+
+.netscape-table th,
+td {
+  border: solid 1px black;
+}
+
+.export-btn-container .export-btn {
+  width: 100%;
+}
+
+.netscape-table tbody tr:nth-of-type(2n + 1) {
+  background-color: aliceblue;
+}
+
+.sync-fields input:focus,
+.sync-mode-tile:focus-visible,
+.sync-toggle:focus-visible,
+.clear-sync-btn:focus-visible,
+.verify-oauth-link:focus-visible,
+.export-btn:focus-visible {
+  outline: 2px solid #485fc7;
+  outline-offset: 2px;
+}

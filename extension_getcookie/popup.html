@@ -1,0 +1,158 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <link rel="stylesheet" href="popup.css" />
+    <link rel="stylesheet" href="popup.dark.css" />
+    <link rel="stylesheet" href="popup-options.css" />
+    <link rel="stylesheet" href="iconfont/material-icons.css" />
+    <script src="popup.mjs" type="module" defer></script>
+    <script src="table-nowrap.js" defer></script>
+  </head>
+
+  <body>
+    <header>
+      <h1>Drive Down Cookies for <a id="location"></a></h1>
+      <hr />
+    </header>
+    <main>
+      <section class="sync-panel" aria-label="Sync connection">
+        <div class="sync-head">
+          <strong>Cookie route</strong>
+          <button id="syncToggle" class="sync-toggle off" type="button" aria-pressed="false">
+            OFF
+          </button>
+        </div>
+        <div class="sync-mode-grid" role="radiogroup" aria-label="Cookie route mode">
+          <button
+            id="modeLocal"
+            class="sync-mode-tile active"
+            type="button"
+            data-mode="local"
+            role="radio"
+            aria-checked="true"
+          >
+            <strong>Local</strong>
+            <span>Local -> Local</span>
+          </button>
+          <button
+            id="modeServer"
+            class="sync-mode-tile"
+            type="button"
+            data-mode="server"
+            role="radio"
+            aria-checked="false"
+          >
+            <strong>Server</strong>
+            <span>Server -> Local</span>
+          </button>
+          <button
+            id="modeAutomatic"
+            class="sync-mode-tile"
+            type="button"
+            data-mode="automatic"
+            role="radio"
+            aria-checked="false"
+          >
+            <strong>Automatic</strong>
+            <span>Run both</span>
+          </button>
+        </div>
+        <div class="sync-fields">
+          <label for="serverEndpoint">Server endpoint</label>
+          <input id="serverEndpoint" type="url" placeholder="https://notebooklm.1nutnhan.com/sync/cookies" />
+          <label for="serverToken">Server token</label>
+          <input id="serverToken" type="password" autocomplete="off" placeholder="Bearer token" />
+          <small class="checkpoint-note">Saved in this Chrome profile and loaded automatically next time.</small>
+        </div>
+        <button id="sendNow" class="manual-sync-btn" type="button">
+          <span class="button-text">
+            Send cookies now
+            <span class="material-symbols-outlined">cloud_upload</span>
+          </span>
+        </button>
+        <button id="clearSyncData" class="clear-sync-btn" type="button">
+          <span class="button-text">
+            Clear cookies & old data
+            <span class="material-symbols-outlined">delete_sweep</span>
+          </span>
+        </button>
+        <span id="syncStatus" class="sync-status">Local mode ready.</span>
+        <a
+          id="verifyOauthLink"
+          class="verify-oauth-link"
+          href="https://notebooklm.google.com/"
+          target="_blank"
+          rel="noreferrer noopener"
+          hidden
+        >
+          Verify OAuth NotebookLM
+        </a>
+      </section>
+
+      <div class="export-btn-container">
+        <button id="export" class="export-btn export">
+          <span class="button-text">
+            Export
+            <span class="material-symbols-outlined">download</span>
+          </span>
+        </button>
+        <button id="exportAs" class="export-btn export-as">
+          <span class="button-text">
+            Export As
+            <span class="material-symbols-outlined">download</span>
+          </span>
+        </button>
+        <button id="copy" class="export-btn copy">
+          <span class="button-text default-copy-text">
+            Copy
+            <span class="material-symbols-outlined">content_paste</span>
+          </span>
+          <span class="button-text copied-text">
+            Copied!
+            <span class="material-symbols-outlined">check</span>
+          </span>
+        </button>
+        <button id="exportAll" class="export-btn large export-all">
+          <span class="button-text">
+            Export All Cookies
+            <span class="material-symbols-outlined">download</span>
+          </span>
+        </button>
+      </div>
+
+      <div id="optionsContainer" class="option-container">
+        <div class="format-option option">
+          <label for="format">Export Format:</label>
+          <select id="format" name="format">
+            <option value="netscape" selected>Netscape</option>
+            <option value="json">JSON</option>
+            <option value="header">Header String</option>
+          </select>
+        </div>
+
+        <div class="nowrap-option option">
+          <label for="nowrapOption">Table Nowrap: </label>
+          <input type="checkbox" id="nowrapOption" name="nowrapOption" checked />
+        </div>
+      </div>
+
+      <div class="table-container">
+        <table id="netscapeTable" class="netscape-table nowrap">
+          <thead>
+            <tr>
+              <th>Domain</th>
+              <th>Include Subdomains</th>
+              <th>Path</th>
+              <th>Secure</th>
+              <th>Expiry</th>
+              <th>Name</th>
+              <th>Value</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </main>
+  </body>
+</html>

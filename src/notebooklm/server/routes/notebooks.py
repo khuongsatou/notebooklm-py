@@ -18,7 +18,7 @@ from __future__ import annotations
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, StringConstraints
 
 from ..._app import notebooks as core
 from ..._app.serialize import to_jsonable
@@ -30,18 +30,19 @@ __all__ = ["router"]
 router = APIRouter(prefix="/notebooks", tags=["notebooks"])
 
 ClientDep = Annotated[NotebookLMClient, Depends(get_client)]
+NotebookTitle = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 
 
 class NotebookCreate(BaseModel):
     """Request body for creating a notebook."""
 
-    title: str
+    title: NotebookTitle
 
 
 class NotebookRename(BaseModel):
     """Request body for renaming a notebook."""
 
-    title: str
+    title: NotebookTitle
 
 
 @router.get("")

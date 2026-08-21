@@ -21,6 +21,7 @@ auth-health probe that works even when unauthenticated.
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any
 
 from fastmcp import Context
@@ -30,9 +31,11 @@ from ..._app.auth_check import AuthCheckPlan, run_auth_check
 from ...exceptions import NotebookLMError
 from ...paths import get_active_profile, get_storage_path
 from .._confirm import READ_ONLY
-from .._context import get_client
+from .._context import client_status, get_client, recover_and_reopen_client
 from .._errors import mcp_errors, redact
 from ..server import SERVER_NAME
+
+logger = logging.getLogger(__name__)
 
 
 def _no_env_auth_json() -> str:
@@ -44,6 +47,36 @@ def _no_env_auth_json() -> str:
     to satisfy the core's required keyword.
     """
     return ""  # pragma: no cover - unreachable while has_env_auth is False
+
+
+def _auth_status_block(
+    *,
+    authenticated: bool,
+    profile: str,
+    result: Any,
+    client_ready: bool = True,
+    client_error: str | None = None,
+) -> dict[str, Any]:
+    """Build the standard auth block for ``server_info`` and reauth responses."""
+    usable = authenticated and client_ready
+    block: dict[str, Any] = {
+        "authenticated": usable,
+        "storage_exists": bool(result.checks.get("storage_exists")),
+        "json_valid": bool(result.checks.get("json_valid")),
+        "cookies_present": bool(result.checks.get("cookies_present")),
+        "sid_cookie": bool(result.checks.get("sid_cookie")),
+        "profile": profile,
+        "client_ready": client_ready,
+    }
+    if client_error is not None:
+        block["reason"] = redact(client_error)
+    if not usable:
+        block["action"] = {
+            "tool": "auth_relogin",
+            "label": "Login again",
+            "description": "Refresh the NotebookLM session and recover a live login.",
+        }
+    return block
 
 
 async def _account_block(ctx: Context, *, authenticated: bool) -> dict[str, Any]:
@@ -89,6 +122,45 @@ async def _account_block(ctx: Context, *, authenticated: bool) -> dict[str, Any]
     }
 
 
+async def _auth_probe(
+    *, include_account: bool = False, ctx: Context | None = None
+) -> dict[str, Any]:
+    """Run the local auth probe and optionally include the account block."""
+    profile = get_active_profile()
+    storage_path = get_storage_path(profile)
+    plan = AuthCheckPlan(
+        storage_path=storage_path,
+        profile=profile,
+        has_env_auth=False,
+        has_home_env=False,
+        auth_source_label=f"file ({storage_path})",
+        test_fetch=False,
+        json_output=True,
+    )
+    result = await run_auth_check(plan, read_env_auth_json=_no_env_auth_json)
+    ready = True
+    error = None
+    if ctx is not None:
+        ready, error = client_status(ctx)
+    auth = _auth_status_block(
+        authenticated=result.all_passed,
+        profile=profile,
+        result=result,
+        client_ready=ready,
+        client_error=error,
+    )
+    info: dict[str, Any] = {
+        "server": SERVER_NAME,
+        "version": __version__,
+        "auth": auth,
+    }
+    if include_account:
+        if ctx is None:  # pragma: no cover - defensive; server_info always supplies ctx
+            raise RuntimeError("account block requested without an MCP context")
+        info["account"] = await _account_block(ctx, authenticated=result.all_passed)
+    return info
+
+
 def register(mcp: Any) -> None:
     """Register the meta tool on ``mcp``."""
 
@@ -118,30 +190,42 @@ def register(mcp: Any) -> None:
         ``profile`` name + booleans are sufficient to diagnose auth health.
         """
         with mcp_errors():
-            profile = get_active_profile()
-            storage_path = get_storage_path(profile)
-            plan = AuthCheckPlan(
-                storage_path=storage_path,
-                profile=profile,
-                has_env_auth=False,
-                has_home_env=False,
-                auth_source_label=f"file ({storage_path})",
-                test_fetch=False,
-                json_output=True,
-            )
-            result = await run_auth_check(plan, read_env_auth_json=_no_env_auth_json)
-            info: dict[str, Any] = {
-                "server": SERVER_NAME,
-                "version": __version__,
-                "auth": {
-                    "authenticated": result.all_passed,
-                    "storage_exists": bool(result.checks.get("storage_exists")),
-                    "json_valid": bool(result.checks.get("json_valid")),
-                    "cookies_present": bool(result.checks.get("cookies_present")),
-                    "sid_cookie": bool(result.checks.get("sid_cookie")),
-                    "profile": profile,
-                },
-            }
-            if include_account:
-                info["account"] = await _account_block(ctx, authenticated=result.all_passed)
+            return await _auth_probe(include_account=include_account, ctx=ctx)
+
+    @mcp.tool()
+    async def auth_relogin(ctx: Context) -> dict[str, Any]:
+        """Refresh the live NotebookLM login from the bound client.
+
+        This is the one-click recovery action for a stale session. It tries the
+        client's layered auth refresh (homepage token refresh, then any configured
+        deeper recovery hooks) and returns the same auth probe structure the
+        ``server_info`` tool uses, so an MCP host can surface it as a button.
+        """
+        with mcp_errors():
+            try:
+                try:
+                    client = get_client(ctx)
+                except Exception:
+                    client = None
+                if client is not None:
+                    try:
+                        await client.refresh_auth(allow_headless=True)
+                    except Exception as refresh_exc:
+                        logger.info(
+                            "MCP auth_relogin in-process refresh failed; trying recovery script: %s",
+                            refresh_exc,
+                        )
+                await recover_and_reopen_client(ctx)
+            except Exception as exc:
+                info = await _auth_probe(ctx=ctx)
+                info["status"] = "needs_login"
+                info["message"] = redact(str(exc))
+                info["command"] = "notebooklm login"
+                return info
+            info = await _auth_probe(ctx=ctx)
+            if info["auth"]["authenticated"]:
+                info["status"] = "ok"
+            else:
+                info["status"] = "needs_login"
+                info["message"] = "Refresh finished, but the session is still not authenticated."
             return info

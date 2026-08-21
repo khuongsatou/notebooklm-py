@@ -1,3 +1,7 @@
 # Never commit deployment secrets.
 .env
+.env.*
+!.env.example
+!.env.development.example
+!.env.production.example
 profile/

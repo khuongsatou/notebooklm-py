@@ -4,6 +4,14 @@ Electron desktop client for the local NotebookLM REST server.
 
 ## Development
 
+Create a development renderer env file when you run the UI directly in the
+browser:
+
+```bash
+cd desktop
+cp .env.development.example .env.development
+```
+
 Terminal 1:
 
 ```bash
@@ -25,8 +33,13 @@ bridge.
 
 ## Production Build
 
+Production builds read `.env.production` when it exists. Keep
+`VITE_NOTEBOOKLM_API_BASE` blank for the normal Electron build so requests keep
+using the preload bridge.
+
 ```bash
 cd desktop
+cp .env.production.example .env.production
 npm run build
 npm run electron
 ```

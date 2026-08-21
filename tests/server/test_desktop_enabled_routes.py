@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import subprocess
+
 from fastapi.testclient import TestClient
 
 from notebooklm._types.sources import Source
@@ -128,3 +130,60 @@ def test_settings_routes_manage_language_and_update_status(
     update = authed_client.get("/v1/settings/update")
     assert update.status_code == 200
     assert update.json()["update_available"] is False
+
+
+def test_settings_login_runs_notebooklm_login(authed_client: TestClient, monkeypatch) -> None:
+    from notebooklm.server.routes import settings as settings_route
+
+    calls = 0
+
+    def fake_run() -> subprocess.CompletedProcess[str]:
+        nonlocal calls
+        calls += 1
+        return subprocess.CompletedProcess(
+            args=["notebooklm", "login"],
+            returncode=0,
+            stdout="saved",
+            stderr="",
+        )
+
+    monkeypatch.setattr(settings_route, "_run_login_command", fake_run)
+
+    resp = authed_client.post("/v1/settings/login")
+
+    assert resp.status_code == 200
+    assert calls == 1
+    assert resp.json() == {
+        "ok": True,
+        "status": "ok",
+        "command": "notebooklm login",
+        "returncode": 0,
+        "timed_out": False,
+        "timeout_seconds": settings_route.LOGIN_TIMEOUT_SECONDS,
+        "stdout": "saved",
+        "stderr": "",
+    }
+
+
+def test_settings_login_reports_timeout(authed_client: TestClient, monkeypatch) -> None:
+    from notebooklm.server.routes import settings as settings_route
+
+    def fake_run() -> subprocess.CompletedProcess[str]:
+        raise subprocess.TimeoutExpired(
+            cmd=["notebooklm", "login"],
+            timeout=settings_route.LOGIN_TIMEOUT_SECONDS,
+            output="partial out",
+            stderr="partial err",
+        )
+
+    monkeypatch.setattr(settings_route, "_run_login_command", fake_run)
+
+    resp = authed_client.post("/v1/settings/login")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is False
+    assert body["status"] == "timeout"
+    assert body["timed_out"] is True
+    assert body["stdout"] == "partial out"
+    assert body["stderr"] == "partial err"

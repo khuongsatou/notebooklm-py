@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import contextlib
+import os
 from collections.abc import AsyncIterator
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -55,6 +56,84 @@ async def test_lifespan_binds_the_factory_client(mock_client: MagicMock) -> None
     async with Client(server):
         pass
     assert captured["client"] is mock_client
+
+
+async def test_appstate_recovery_retries_factory(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A degraded startup/request runs MCP cookie recovery once, then retries."""
+    recovered: list[str | None] = []
+    attempts = 0
+    sentinel = MagicMock()
+
+    async def fake_recovery(*, profile=None):
+        recovered.append(profile)
+        return True
+
+    @contextlib.asynccontextmanager
+    async def flaky_factory() -> AsyncIterator[MagicMock]:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise ValueError("stale cookies")
+        yield sentinel
+
+    monkeypatch.setattr("notebooklm.mcp._context.run_recovery_once", fake_recovery)
+    async with contextlib.AsyncExitStack() as stack:
+        state = AppState(client_factory=flaky_factory, exit_stack=stack, profile="work")
+        client = await state.ensure_client()
+
+    assert client is sentinel
+    assert recovered == ["work"]
+    assert attempts == 2
+    assert state.client_error is None
+
+
+async def test_appstate_force_recovery_closes_stale_client_and_reopens(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Forced auth recovery replaces the lifespan client, not just the storage file."""
+    recovered: list[str | None] = []
+    stale = MagicMock()
+    stale.close = AsyncMock()
+    fresh = MagicMock()
+    clients = [fresh]
+
+    async def fake_recovery(*, profile=None):
+        recovered.append(profile)
+        return True
+
+    @contextlib.asynccontextmanager
+    async def factory() -> AsyncIterator[MagicMock]:
+        yield clients.pop(0)
+
+    monkeypatch.setattr("notebooklm.mcp._context.run_recovery_once", fake_recovery)
+    async with contextlib.AsyncExitStack() as stack:
+        state = AppState(
+            client=stale,
+            client_factory=factory,
+            exit_stack=stack,
+            profile="work",
+        )
+        client = await state.recover_and_reopen_client()
+
+    assert client is fresh
+    stale.close.assert_awaited_once()
+    assert recovered == ["work"]
+    assert state.client_error is None
+
+
+def test_create_server_with_test_factory_does_not_configure_refresh_cmd(
+    mock_client: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The production auto-wire must not pollute unit-test injected factories."""
+    monkeypatch.delenv("NOTEBOOKLM_REFRESH_CMD", raising=False)
+
+    @contextlib.asynccontextmanager
+    async def factory() -> AsyncIterator[MagicMock]:
+        yield mock_client
+
+    create_server(client_factory=factory)
+
+    assert "NOTEBOOKLM_REFRESH_CMD" not in os.environ
 
 
 def test_get_client_reads_appstate() -> None:

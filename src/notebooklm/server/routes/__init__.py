@@ -8,12 +8,28 @@ NO ``click`` / ``rich`` / ``cli``.
 
 from __future__ import annotations
 
-from . import artifacts, chat, labels, notebooks, notes, research, settings, share, sources
+from . import (
+    artifacts,
+    chat,
+    cookie_sync,
+    dashboard_auth,
+    labels,
+    mcp_keys,
+    notebooks,
+    notes,
+    research,
+    settings,
+    share,
+    sources,
+)
 
 __all__ = [
     "artifacts",
     "chat",
+    "cookie_sync",
+    "dashboard_auth",
     "labels",
+    "mcp_keys",
     "notebooks",
     "notes",
     "research",

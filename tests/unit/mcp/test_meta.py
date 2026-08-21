@@ -10,6 +10,7 @@ honors.
 from __future__ import annotations
 
 import json
+from contextlib import asynccontextmanager
 
 import pytest
 
@@ -18,6 +19,7 @@ pytest.importorskip("fastmcp")
 
 from notebooklm import __version__  # noqa: E402 - after importorskip guard
 from notebooklm.exceptions import RPCError  # noqa: E402 - after importorskip guard
+from notebooklm.mcp.server import create_server  # noqa: E402 - after importorskip guard
 from notebooklm.types import AccountLimits, AccountTier  # noqa: E402 - after importorskip guard
 
 from .conftest import AsyncMock  # noqa: E402 - after importorskip guard
@@ -61,6 +63,11 @@ async def test_server_info_auth_missing(mcp_call, mock_client, tmp_path, monkeyp
     auth = result.structured_content["auth"]
     assert auth["authenticated"] is False
     assert auth["storage_exists"] is False
+    assert auth["action"] == {
+        "tool": "auth_relogin",
+        "label": "Login again",
+        "description": "Refresh the NotebookLM session and recover a live login.",
+    }
 
 
 async def test_server_info_auth_present(mcp_call, mock_client, tmp_path, monkeypatch) -> None:
@@ -88,6 +95,83 @@ async def test_server_info_auth_present(mcp_call, mock_client, tmp_path, monkeyp
     assert auth["storage_exists"] is True
     assert auth["sid_cookie"] is True
     assert auth["authenticated"] is True
+    assert "action" not in auth
+
+
+async def test_auth_relogin_refreshes_client_and_reports_auth(
+    mcp_call, mock_client, tmp_path, monkeypatch
+) -> None:
+    """``auth_relogin`` is the MCP button/action for recovering a stale login."""
+    monkeypatch.setenv("NOTEBOOKLM_HOME", str(tmp_path))
+    _write_authed_storage()
+    mock_client.refresh_auth = AsyncMock()
+    mock_client.close = AsyncMock()
+
+    async def fake_recovery(*, profile=None):
+        return True
+
+    monkeypatch.setattr("notebooklm.mcp._context.run_recovery_once", fake_recovery)
+    result = await mcp_call("auth_relogin")
+
+    mock_client.refresh_auth.assert_awaited_once_with(allow_headless=True)
+    mock_client.close.assert_awaited_once()
+    assert result.structured_content["status"] == "ok"
+    assert result.structured_content["auth"]["authenticated"] is True
+
+
+async def test_auth_relogin_recovers_when_startup_client_failed(tmp_path, monkeypatch) -> None:
+    """The auth button must work even when lifespan startup could not open a client."""
+    from fastmcp import Client
+
+    monkeypatch.setenv("NOTEBOOKLM_HOME", str(tmp_path))
+    _write_authed_storage()
+    attempts = 0
+    recovery_results = [False, True]
+    recovered_profiles: list[str | None] = []
+
+    async def fake_recovery(*, profile=None):
+        recovered_profiles.append(profile)
+        return recovery_results.pop(0)
+
+    @asynccontextmanager
+    async def recovering_factory():
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise ValueError("stale process session")
+        client = AsyncMock()
+        client.close = AsyncMock()
+        yield client
+
+    monkeypatch.setattr("notebooklm.mcp._context.run_recovery_once", fake_recovery)
+    async with Client(create_server(client_factory=lambda: recovering_factory())) as client:
+        result = await client.call_tool("auth_relogin", {})
+
+    assert result.structured_content["status"] == "ok"
+    assert result.structured_content["auth"]["authenticated"] is True
+    assert attempts == 2
+    assert recovered_profiles == [None, None]
+
+
+async def test_server_info_survives_degraded_client_startup(tmp_path, monkeypatch) -> None:
+    """A stale live session must not prevent the meta tools from exposing reauth."""
+    from fastmcp import Client
+
+    monkeypatch.setenv("NOTEBOOKLM_HOME", str(tmp_path))
+    _write_authed_storage()
+
+    @asynccontextmanager
+    async def failing_factory():
+        raise ValueError("Authentication expired or invalid. Redirected to Google login.")
+        yield  # pragma: no cover
+
+    async with Client(create_server(client_factory=lambda: failing_factory())) as client:
+        result = await client.call_tool("server_info", {})
+
+    auth = result.structured_content["auth"]
+    assert auth["authenticated"] is False
+    assert auth["client_ready"] is False
+    assert auth["action"]["tool"] == "auth_relogin"
 
 
 async def test_server_info_does_not_leak_absolute_storage_path(

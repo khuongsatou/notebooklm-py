@@ -6,7 +6,7 @@
 > server and its dependencies only arrive with the `mcp` extra.
 
 The MCP server exposes NotebookLM to any [Model Context Protocol](https://modelcontextprotocol.io)
-client (Claude Desktop, Claude Code, Cursor, Windsurf, …) as a set of **37 tools** — manage
+client (Claude Desktop, Claude Code, Cursor, Windsurf, …) as a set of **38 tools** — manage
 notebooks and sources, chat over a notebook's sources, generate and download studio artifacts,
 and run deep research. It is a thin adapter over the same business logic the CLI uses, so it
 behaves identically to `notebooklm <command>`.
@@ -23,8 +23,8 @@ uvx --from "notebooklm-py[mcp]" notebooklm-mcp --help
 
 ## Authenticate (once)
 
-The server reuses the CLI's stored credentials — it does **not** log in on its own. Authenticate
-once before starting it:
+The server reuses the CLI's stored credentials — it does **not** log in on its own at
+startup. Authenticate once before starting it:
 
 ```bash
 notebooklm login
@@ -110,24 +110,43 @@ and no TLS certificate to manage** (the tunnel terminates TLS at its edge).
 # 1. bootstrap the master token once (a machine with a browser):
 notebooklm login --master-token --account you@example.com      # writes ~/.notebooklm/profiles/default
 # 2. secrets:
-cp deploy/.env.example deploy/.env                              # edit per the steps below
-#    NOTEBOOKLM_PROFILE_DIR defaults to ~/.notebooklm/profiles/default (override for a throwaway profile)
+cp deploy/.env.development.example deploy/.env.development      # dev
+cp deploy/.env.production.example deploy/.env.production        # production
+#    NOTEBOOKLM_PROFILE_DIR defaults to ~/.notebooklm/profiles/default;
+#    set different profile dirs for dev and production accounts.
 ```
 
-**Two auth methods coexist on one `/mcp`** (FastMCP `MultiAuth`):
+`make dev` reads `deploy/.env.development`; `make prod VERSION=x.y.z` reads
+`deploy/.env.production`. A legacy `deploy/.env` still works as a fallback for older installs.
+
+**Three auth methods can coexist on one `/mcp`**:
+
 - **Claude Code / Desktop** → the static `NOTEBOOKLM_MCP_TOKEN` bearer (an `Authorization` header).
+- **NotebookLM Pro dashboard** → managed `nlm_mcp_…` bearer keys issued from the **MCP**
+  tab. Enable with `NOTEBOOKLM_MCP_MANAGED_KEYS_ENABLED=1` (the deployment templates
+  default this to enabled). Only SHA-256 hashes and safe previews are stored in the
+  shared profile's `mcp_api_keys.json`; the full secret is shown once, and revocation
+  is checked on the next request.
 - **claude.ai (web/mobile)** → optional **self-hosted OAuth** (one password, no external IdP):
   set `NOTEBOOKLM_MCP_OAUTH_PASSWORD` (≥16 random chars) + `NOTEBOOKLM_MCP_OAUTH_BASE_URL`
   (the **bare public origin**, no `/mcp`). Unset → bearer-only.
 
+The MCP tab also reads gateway telemetry from the shared profile's `mcp_usage.json`.
+It shows create attempts, successful/failed creates, successful downloads, daily
+history, and recent secret-free tool activity. Create operations are reserved
+atomically before dispatch so concurrent gateway processes cannot exceed the daily
+limit. The default is 100 successful creates per `Asia/Ho_Chi_Minh` day; override it
+with `NOTEBOOKLM_MCP_DAILY_CREATE_LIMIT` in both the MCP and web API services.
+
 ### Tunnel A — Cloudflare (needs a domain in your Cloudflare account)
 1. Cloudflare **Zero Trust → Networks → Tunnels**: create a tunnel; copy its token to
-   `CF_TUNNEL_TOKEN` in `.env`.
+   `CF_TUNNEL_TOKEN` in the selected env file.
 2. Add a **Public Hostname** (e.g. `notebooklm.yourdomain.com`) → **Service**
    `http://notebooklm-mcp:9420` — the **docker service name**, not `localhost`; route the **whole
    host** (`/`), not a `/mcp`-scoped ingress (the OAuth routes live at the root). Cloudflare
    auto-creates the proxied DNS record and serves a valid cert.
-3. `.env`: `NOTEBOOKLM_MCP_OAUTH_BASE_URL=https://notebooklm.yourdomain.com` (bare origin).
+3. Selected env file: `NOTEBOOKLM_MCP_OAUTH_BASE_URL=https://notebooklm.yourdomain.com`
+   (bare origin).
 4. Run: `cd deploy && make dev` (Cloudflare is the default profile).
 
 ### Tunnel B — Tailscale Funnel (no domain — free, stable `*.ts.net` HTTPS)
@@ -138,11 +157,13 @@ the admin console** (these are policy/feature prerequisites, not per-machine tog
 2. Grant the **`funnel` node attribute**: admin console → **Settings → General → Funnel →
    Manage → Node attributes → Add node attribute** → `funnel` (JSON preview:
    `{"target": ["*"], "attr": ["funnel"]}`).
-3. Create a **normal auth key** (Settings → Keys) → `.env` `TS_AUTHKEY` (there's no
-   "Funnel-capable" key type; Funnel comes from the policy in step 2).
+3. Create a **normal auth key** (Settings → Keys) → selected env file `TS_AUTHKEY`
+   (there's no "Funnel-capable" key type; Funnel comes from the policy in step 2).
 
 Then:
-4. `.env`: `NOTEBOOKLM_MCP_OAUTH_BASE_URL=https://notebooklm-mcp.<your-tailnet>.ts.net` (bare origin).
+4. Selected env file:
+   `NOTEBOOKLM_MCP_OAUTH_BASE_URL=https://notebooklm-mcp.<your-tailnet>.ts.net`
+   (bare origin).
    Find `<your-tailnet>` on the admin console **DNS** page (the **"Tailnet name"**, e.g.
    `tailXXXXXX.ts.net`).
 5. Run: `cd deploy && make dev TUNNEL=tailscale`. The sidecar (`deploy/tailscale/funnel.json` via
@@ -297,7 +318,7 @@ a single in-flight task.
 | **Artifacts** | `artifact_list(notebook)` · `artifact_generate(notebook, artifact_type, …)` · `artifact_status(notebook, task_id)` · `artifact_get_prompt(notebook, artifact)` (the free-text prompt an artifact was generated from; `null` if none) · `artifact_download(notebook, artifact_type, path, output_format?, artifact_id?)` · `artifact_rename(notebook, artifact, new_title)` · `artifact_retry(notebook, artifact)` (re-run a failed artifact in place; task_id == artifact_id) · `artifact_delete(notebook, artifact, confirm)` |
 | **Research** | `research_start(notebook, query, source, mode)` · `research_status(notebook, task_id?)` · `research_import(notebook, task_id)` · `research_cancel(notebook, run_id)` |
 | **Sharing** | `share_status(notebook)` (is_public/access/share_url/shared_users; enums as string labels; `view_level` omitted — the read API can't report it) · `share_set_access(notebook, public?, view_level?)` (link settings; `view_level`: full\|chat, echoed back only when set) · `share_set_user(notebook, email, permission?, notify?, message?)` (upsert grant; `permission`: editor\|viewer) · `share_remove_user(notebook, email, confirm)` |
-| **Server** | `server_info(include_account?)` — version + local auth health; `include_account=true` adds an `account` block (tier, plan name, notebook/source limits, global `output_language`) for quota pacing + language context (best-effort, needs a live session) |
+| **Server** | `server_info(include_account?)` — version + local auth health; when auth is missing it returns an `auth.action` pointing at `auth_relogin`; `include_account=true` adds an `account` block (tier, plan name, notebook/source limits, global `output_language`) for quota pacing + language context (best-effort, needs a live session) · `auth_relogin()` — one-click auth recovery for a stale local NotebookLM login |
 
 Tools that only read are annotated read-only; the destructive tools (the four `*_delete` tools plus `share_remove_user`) are annotated destructive
 and require `confirm`. A host that honors MCP annotations can auto-allow the read-only calls and
@@ -305,8 +326,10 @@ gate the destructive ones.
 
 ## Troubleshooting
 
-- **`AUTH` errors / "not authenticated".** Run `notebooklm login` (or `notebooklm -p <profile> login`)
-  in a terminal, then restart the server. Check with the `server_info` tool, which reports auth health.
+- **`AUTH` errors / "not authenticated".** First try the `auth_relogin` tool (or the
+  `auth.action` returned by `server_info`). If it still reports `needs_login`, run
+  `notebooklm login` (or `notebooklm -p <profile> login`) in a terminal, then restart
+  the server. Check with `server_info`, which reports auth health.
 - **`uvx` / `uv` not found.** Install uv: `curl -LsSf https://astral.sh/uv/install.sh | sh` (macOS/Linux)
   or `powershell -c "irm https://astral.sh/uv/install.ps1 | iex"` (Windows). The desktop launcher also
   searches common install dirs beyond `PATH`.

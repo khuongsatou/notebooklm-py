@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 
 from notebooklm._types.notebooks import Notebook
@@ -23,6 +24,18 @@ def test_create_returns_201_with_new_notebook(authed_client: TestClient) -> None
     assert resp.json()["title"] == "Fresh"
 
 
+@pytest.mark.parametrize("title", ["", "   ", "\t\n"])
+def test_create_rejects_blank_title(authed_client: TestClient, title: str) -> None:
+    resp = authed_client.post("/v1/notebooks", json={"title": title})
+    assert resp.status_code == 422
+
+
+def test_create_trims_title(authed_client: TestClient) -> None:
+    resp = authed_client.post("/v1/notebooks", json={"title": "  Fresh  "})
+    assert resp.status_code == 201
+    assert resp.json()["title"] == "Fresh"
+
+
 def test_status_returns_authenticated_server_info(authed_client: TestClient) -> None:
     resp = authed_client.get("/v1/status")
     assert resp.status_code == 200
@@ -35,6 +48,23 @@ def test_rename_notebook(authed_client: TestClient, fake_client: FakeClient) -> 
     resp = authed_client.patch("/v1/notebooks/nb-2", json={"title": "New"})
     assert resp.status_code == 200
     assert resp.json()["title"] == "New"
+
+
+def test_rename_trims_title(authed_client: TestClient, fake_client: FakeClient) -> None:
+    fake_client.notebooks_store["nb-trim"] = Notebook(id="nb-trim", title="Before")
+    resp = authed_client.patch("/v1/notebooks/nb-trim", json={"title": "  After  "})
+    assert resp.status_code == 200
+    assert resp.json()["title"] == "After"
+
+
+@pytest.mark.parametrize("title", ["", "   ", "\t\n"])
+def test_rename_rejects_blank_title(
+    authed_client: TestClient, fake_client: FakeClient, title: str
+) -> None:
+    fake_client.notebooks_store["nb-blank"] = Notebook(id="nb-blank", title="Before")
+    resp = authed_client.patch("/v1/notebooks/nb-blank", json={"title": title})
+    assert resp.status_code == 422
+    assert fake_client.notebooks_store["nb-blank"].title == "Before"
 
 
 def test_get_summary(authed_client: TestClient, fake_client: FakeClient) -> None:
