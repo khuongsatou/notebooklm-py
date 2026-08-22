@@ -21,6 +21,8 @@ def test_mcp_config_is_safe_and_manifest_driven(
     assert body["endpoint"] == "https://mcp.example.test/mcp"
     assert body["transport"] == "streamable-http"
     assert body["auth"]["header"] == "Authorization"
+    assert body["endpoints"]["mcpBaseUrl"] == "https://mcp.example.test"
+    assert body["permissions"]["manageKey"] == "mcp-key:manage"
     assert "internal" not in str(body).lower()
     assert "secret" not in str(body).lower()
 

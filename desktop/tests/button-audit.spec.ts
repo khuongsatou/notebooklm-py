@@ -445,7 +445,7 @@ test("button audit: every enabled MVP control has backend or local-state evidenc
             () => (window as typeof window & { __openedExternal?: string[] }).__openedExternal,
           ),
         )
-        .toContain("https://notebooklm.google.com/notebook/nb-1");
+        .toContain("https://notebook.google.com/notebook/nb-1");
     },
   );
 
@@ -466,7 +466,7 @@ test("button audit: every enabled MVP control has backend or local-state evidenc
   });
   await expectBackend(page, audit, "Tabs", "Settings tab", "GET /v1/settings", async () => {
     await clickTab(page, "Settings");
-    await expect(page.locator(".tabs").getByRole("button", { name: "Settings", exact: true })).toHaveClass(/active/);
+    await expect(page.locator(".status-dock").getByRole("button", { name: "Settings", exact: true })).toHaveClass(/active/);
   });
   await clickTab(page, "Overview");
 
@@ -545,7 +545,7 @@ test("button audit: every enabled MVP control has backend or local-state evidenc
             () => (window as typeof window & { __openedExternal?: string[] }).__openedExternal,
           ),
         )
-        .toContain("https://notebooklm.google.com/notebook/nb-1");
+        .toContain("https://notebook.google.com/notebook/nb-1");
     },
   );
 
@@ -648,14 +648,14 @@ test("button audit: every enabled MVP control has backend or local-state evidenc
 
   await clickTab(page, "Studio");
   await expectBackend(page, audit, "Studio", "Generate artifact", "POST /v1/notebooks/nb-1/artifacts", async () => {
-    await page.locator("select").first().selectOption("quiz");
+    await page.getByLabel("Artifact type").selectOption("quiz");
     await page.getByRole("button", { name: "Generate" }).click();
     await expect(page.getByText("quiz generation")).toBeVisible();
   });
 
   await clickTab(page, "Artifacts");
   await expectBackend(page, audit, "Artifacts", "Download artifact", "POST /v1/notebooks/nb-1/artifacts/download", async () => {
-    await page.locator("select").first().selectOption("report");
+    await page.getByLabel("Artifact download type").selectOption("report");
     await page.getByRole("button", { name: "Download" }).click();
     await expect(page.getByText("Saved notebooklm-report.md")).toBeVisible();
   });
@@ -723,7 +723,7 @@ test("button audit: every enabled MVP control has backend or local-state evidenc
     await expect(page.getByText("notebooklm-server")).toBeVisible();
   });
   await expectBackend(page, audit, "Settings", "Save language", "PATCH /v1/settings/language", async () => {
-    await page.locator("select").selectOption("vi");
+    await page.getByLabel("Output language").selectOption("vi");
     await page.getByRole("button", { name: "Save language" }).click();
     await expect(page.locator(".json-preview", { hasText: '"language_name": "Tiếng Việt"' })).toBeVisible();
   });
@@ -752,7 +752,10 @@ test("button audit: every enabled MVP control has backend or local-state evidenc
 });
 
 async function clickTab(page: Page, name: string) {
-  await page.locator(".tabs").getByRole("button", { name, exact: true }).click();
+  await page
+    .locator(".tabs, .status-dock")
+    .getByRole("button", { name, exact: true })
+    .click();
 }
 
 async function requests(page: Page) {

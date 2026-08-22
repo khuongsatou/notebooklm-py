@@ -82,8 +82,8 @@ try {
     throw error;
   }
   await page.getByRole("button", { name: "MCP", exact: true }).click();
-  await page.getByRole("heading", { name: "MCP connections" }).waitFor();
-  await page.getByText(endpoint, { exact: true }).waitFor();
+  await page.getByRole("heading", { name: "MCP API keys & link" }).waitFor();
+  await page.locator(".mcp-link-panel").getByText(endpoint, { exact: true }).waitFor();
   const usageDashboard = page.getByLabel("Thống kê sử dụng MCP");
   await usageDashboard.getByRole("heading", { name: "Usage Dashboard" }).waitFor();
   const createMetric = usageDashboard.locator("article", { hasText: "Lượt tạo" }).locator("strong");

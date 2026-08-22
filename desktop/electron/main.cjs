@@ -6,6 +6,7 @@ const http = require("node:http");
 const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
+const { inspectChromeProfile, openProfileLogin } = require("./profile185.cjs");
 
 let mainWindow = null;
 let backend = null;
@@ -13,7 +14,8 @@ let backendConfig = null;
 let backendRestart = null;
 
 const DEFAULT_COOKIE_SYNC_ENDPOINT = "https://notebooklm.1nutnhan.com/sync/cookies";
-const NOTEBOOKLM_COOKIE_SOURCE_URL = "https://notebooklm.google.com/";
+const NOTEBOOKLM_CURRENT_BASE_URL = "https://notebook.google.com";
+const NOTEBOOKLM_COOKIE_SOURCE_URL = `${NOTEBOOKLM_CURRENT_BASE_URL}/`;
 const LOCAL_LOGIN_TIMEOUT_MS = 330_000;
 const LOCAL_RESET_TIMEOUT_MS = 120_000;
 const PLAYWRIGHT_INSTALL_TIMEOUT_MS = 330_000;
@@ -42,6 +44,7 @@ function findFreePort() {
 function backendEnvironment(token) {
   const env = {
     ...process.env,
+    NOTEBOOKLM_BASE_URL: process.env.NOTEBOOKLM_BASE_URL || NOTEBOOKLM_CURRENT_BASE_URL,
     NOTEBOOKLM_SERVER_TOKEN: token,
   };
   for (const key of ["NO_PROXY", "no_proxy"]) {
@@ -270,6 +273,47 @@ function runLocalLoginCommand(profile = localNotebookLmProfile(), { fresh = fals
     timeoutMs: LOCAL_LOGIN_TIMEOUT_MS,
     env: {
       ...process.env,
+      NOTEBOOKLM_BASE_URL: process.env.NOTEBOOKLM_BASE_URL || NOTEBOOKLM_CURRENT_BASE_URL,
+      NOTEBOOKLM_HOME: localNotebookLmHome(),
+    },
+  });
+}
+
+function runProfileCookieImportCommand(profile = localNotebookLmProfile()) {
+  const chromeProfile = inspectChromeProfile();
+  if (!chromeProfile.ok) {
+    return Promise.resolve({
+      ok: false,
+      command: "notebooklm login --browser-cookies chrome::<profile>",
+      returncode: null,
+      timed_out: false,
+      timeout_seconds: Math.round(LOCAL_LOGIN_TIMEOUT_MS / 1000),
+      stdout: "",
+      stderr: !chromeProfile.chrome_exists
+        ? `Google Chrome was not found at ${chromeProfile.chrome_path}.`
+        : !chromeProfile.profile_exists
+          ? `Chrome profile ${chromeProfile.profile_directory} was not found at ${chromeProfile.profile_path}.`
+          : `Drive Down Cookies (${chromeProfile.extension_id}) is not configured in ${chromeProfile.profile_directory}.`,
+    });
+  }
+  const args = ["run", "--extra", "cookies", "notebooklm"];
+  if (profile && profile !== "default") {
+    args.push("--profile", profile);
+  }
+  args.push(
+    "login",
+    "--browser-cookies",
+    `chrome::${chromeProfile.profile_directory}`,
+  );
+  if (chromeProfile.profile_email) {
+    args.push("--account", chromeProfile.profile_email);
+  }
+  return runCommand("uv", args, {
+    cwd: repoRoot(),
+    timeoutMs: LOCAL_LOGIN_TIMEOUT_MS,
+    env: {
+      ...process.env,
+      NOTEBOOKLM_BASE_URL: process.env.NOTEBOOKLM_BASE_URL || NOTEBOOKLM_CURRENT_BASE_URL,
       NOTEBOOKLM_HOME: localNotebookLmHome(),
     },
   });
@@ -412,6 +456,15 @@ function syncAuthHeaders(token) {
   return token ? { Authorization: `Bearer ${token.trim()}` } : {};
 }
 
+function normalizeProfileLoginId(value) {
+  const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+    normalized,
+  )
+    ? normalized
+    : null;
+}
+
 async function uploadStorageStateToVps(storageState) {
   const { endpoint, token } = cookieSyncConfig();
   if (!token) {
@@ -454,12 +507,17 @@ async function uploadStorageStateToVps(storageState) {
   return result;
 }
 
-async function checkVpsConnected() {
+async function checkVpsConnected(profileLoginId = null) {
   const { endpoint, token } = cookieSyncConfig();
   if (!token) {
     throw new Error("NOTEBOOKLM_COOKIE_SYNC_TOKEN is missing in .env.vps.");
   }
   const connectedUrl = new URL("/sync/connected", new URL(endpoint).origin);
+  const expectedLoginId = normalizeProfileLoginId(profileLoginId);
+  if (profileLoginId && !expectedLoginId) {
+    throw new Error("Profile login correlation ID is invalid.");
+  }
+  if (expectedLoginId) connectedUrl.searchParams.set("profile_login_id", expectedLoginId);
   return readJsonResponse(
     await fetch(connectedUrl, {
       method: "GET",
@@ -575,6 +633,47 @@ async function localLoginAndSyncToVps() {
   };
 }
 
+async function finalizeProfileLogin() {
+  const profile = localNotebookLmProfile();
+  const storagePath = localStoragePath(profile);
+  const login = await runProfileCookieImportCommand(profile);
+  if (!login.ok) {
+    return {
+      ok: false,
+      status: login.timed_out ? "profile_import_timeout" : "profile_import_failed",
+      profile,
+      storage_path: storagePath,
+      login,
+      sync: null,
+      connected: null,
+    };
+  }
+  if (!fs.existsSync(storagePath)) {
+    return {
+      ok: false,
+      status: "storage_missing",
+      profile,
+      storage_path: storagePath,
+      login,
+      sync: null,
+      connected: null,
+      error: "Profile 185 cookie import completed, but storage_state.json was not found.",
+    };
+  }
+  const storageState = JSON.parse(fs.readFileSync(storagePath, "utf8"));
+  const sync = await uploadStorageStateToVps(storageState);
+  const connected = await checkVpsConnected();
+  return {
+    ok: sync?.ok === true && connected?.connected === true,
+    status: connected?.connected === true ? "connected" : "sync_failed",
+    profile,
+    storage_path: storagePath,
+    login,
+    sync,
+    connected,
+  };
+}
+
 async function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1420,
@@ -640,6 +739,43 @@ ipcMain.handle("notebooklm:local-login-sync", async () => {
       ok: false,
       status: "sync_failed",
       error: error instanceof Error ? error.message : "Local login sync failed",
+    };
+  }
+});
+
+ipcMain.handle("notebooklm:open-profile-login", async () => {
+  try {
+    return await openProfileLogin();
+  } catch (error) {
+    return {
+      ok: false,
+      status: "launch_failed",
+      error: error instanceof Error ? error.message : "Could not open Chrome Profile 185.",
+    };
+  }
+});
+
+ipcMain.handle("notebooklm:profile-login-status", async (_event, loginId) => {
+  try {
+    return await checkVpsConnected(loginId);
+  } catch (error) {
+    return {
+      ok: false,
+      status: "check_failed",
+      connected: false,
+      error: error instanceof Error ? error.message : "Profile login status check failed",
+    };
+  }
+});
+
+ipcMain.handle("notebooklm:finalize-profile-login", async () => {
+  try {
+    return await finalizeProfileLogin();
+  } catch (error) {
+    return {
+      ok: false,
+      status: "profile_finalize_failed",
+      error: error instanceof Error ? error.message : "Could not finalize Profile 185 login.",
     };
   }
 });

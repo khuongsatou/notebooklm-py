@@ -7,6 +7,8 @@ import {
   CheckCircle2,
   Check,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   Code2,
   Copy,
   Database,
@@ -89,6 +91,9 @@ type NotebookDialogState = {
   title: string;
 };
 
+type NotebookOwnershipFilter = "all" | "owned" | "shared";
+type NotebookSort = "modified-desc" | "created-desc" | "title-asc";
+
 const views: Array<{
   id: View;
   label: string;
@@ -108,6 +113,9 @@ const views: Array<{
   { id: "mcp", label: "MCP", icon: KeyRound },
   { id: "settings", label: "Settings", icon: Settings },
 ];
+
+const headerViews = views.filter((item) => item.id === "mcp" || item.id === "settings");
+const notebookViews = views.filter((item) => item.id !== "mcp" && item.id !== "settings");
 
 const artifactTypes = [
   "audio",
@@ -135,8 +143,45 @@ const downloadTypes = [
 ];
 
 const verificationStorageKey = "notebooklm-pro.verifications.v1";
+const browserAuthCheckpointKey = "notebooklm-pro.browser-auth-checkpoint.v1";
 const driveDownCookiesExtensionId = "cclelndahbckbenkjhflpdbgdldlbecc";
-const googleNotebookLMBaseUrl = "https://notebooklm.google.com";
+const googleNotebookLMBaseUrl = "https://notebook.google.com";
+const notebooksPerPage = 10;
+
+type BrowserAuthCheckpoint = {
+  checkedAt: number;
+};
+
+function readBrowserAuthCheckpoint(): BrowserAuthCheckpoint | null {
+  try {
+    const raw = window.localStorage.getItem(browserAuthCheckpointKey);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<BrowserAuthCheckpoint> | string | number;
+    if (typeof parsed === "string") {
+      const checkedAt = Number(parsed);
+      return Number.isFinite(checkedAt) ? { checkedAt } : null;
+    }
+    if (typeof parsed === "number") {
+      return Number.isFinite(parsed) ? { checkedAt: parsed } : null;
+    }
+    if (parsed && typeof parsed.checkedAt === "number" && Number.isFinite(parsed.checkedAt)) {
+      return { checkedAt: parsed.checkedAt };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function saveBrowserAuthCheckpoint(): BrowserAuthCheckpoint {
+  const checkpoint = { checkedAt: Date.now() };
+  window.localStorage.setItem(browserAuthCheckpointKey, JSON.stringify(checkpoint));
+  return checkpoint;
+}
+
+function clearBrowserAuthCheckpoint() {
+  window.localStorage.removeItem(browserAuthCheckpointKey);
+}
 
 function notebookDisplayName(notebook: Pick<Notebook, "id" | "title">): string {
   const title = typeof notebook.title === "string" ? notebook.title.trim() : "";
@@ -163,6 +208,7 @@ type LogEntry = {
 
 function requestDriveDownCookies(
   type: "connect" | "sync-now",
+  payload: Record<string, unknown> = {},
 ): Promise<DriveDownCookiesResponse> {
   return new Promise((resolve, reject) => {
     const runtime = window.chrome?.runtime;
@@ -172,7 +218,7 @@ function requestDriveDownCookies(
     }
     runtime.sendMessage(
       driveDownCookiesExtensionId,
-      { target: "drive-down-cookies", type },
+      { target: "drive-down-cookies", type, ...payload },
       (response) => {
         const runtimeError = runtime.lastError?.message;
         if (runtimeError) {
@@ -247,9 +293,35 @@ function BrowserPasswordGate({
   );
 }
 
+function BrowserSessionLoadingGate({ checkpointed }: { checkpointed: boolean }) {
+  return (
+    <main className="browser-auth-shell">
+      <section className="browser-auth-card browser-auth-loading" aria-label="Checking dashboard session">
+        <span className="browser-auth-mark">
+          <Loader2 size={24} className="spin" />
+        </span>
+        <div>
+          <span className="browser-auth-kicker">Production workspace</span>
+          <h1>NotebookLM Pro</h1>
+          <p>
+            {checkpointed
+              ? "Khôi phục phiên đăng nhập đã lưu..."
+              : "Đang kiểm tra phiên đăng nhập..."}
+          </p>
+        </div>
+      </section>
+    </main>
+  );
+}
+
 function App() {
   const browserHosted = !window.notebooklmDesktop;
-  const [browserSessionReady, setBrowserSessionReady] = useState(() => !browserHosted);
+  const [browserAuthCheckpoint, setBrowserAuthCheckpoint] = useState<BrowserAuthCheckpoint | null>(
+    () => (browserHosted ? readBrowserAuthCheckpoint() : null),
+  );
+  const [browserSessionState, setBrowserSessionState] = useState<"checking" | "authenticated" | "unauthenticated">(
+    () => (browserHosted ? "checking" : "authenticated"),
+  );
   const [browserSessionError, setBrowserSessionError] = useState("");
   const [browserLoginRunning, setBrowserLoginRunning] = useState(false);
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null);
@@ -270,6 +342,7 @@ function App() {
   const [loginRunning, setLoginRunning] = useState(false);
   const [loginMessage, setLoginMessage] = useState("Idle");
   const [localLoginRunning, setLocalLoginRunning] = useState(false);
+  const [profileLoginRunning, setProfileLoginRunning] = useState(false);
   const [localResetRunning, setLocalResetRunning] = useState(false);
   const [localSyncMessage, setLocalSyncMessage] = useState("Not checked");
   const [vpsChecking, setVpsChecking] = useState(false);
@@ -289,6 +362,10 @@ function App() {
   ]);
   const lastBackendStatusLog = useRef("");
   const [notebookSearch, setNotebookSearch] = useState("");
+  const [notebookOwnershipFilter, setNotebookOwnershipFilter] =
+    useState<NotebookOwnershipFilter>("all");
+  const [notebookSort, setNotebookSort] = useState<NotebookSort>("modified-desc");
+  const [notebookPage, setNotebookPage] = useState(1);
   const [notebookDialog, setNotebookDialog] = useState<NotebookDialogState | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Notebook | null>(null);
 
@@ -298,17 +375,54 @@ function App() {
   );
   const filteredNotebooks = useMemo(() => {
     const query = notebookSearch.trim().toLocaleLowerCase();
-    if (!query) return notebooks;
-    return notebooks.filter((notebook) =>
-      `${notebookDisplayName(notebook)} ${notebook.id}`.toLocaleLowerCase().includes(query),
-    );
-  }, [notebooks, notebookSearch]);
+    return notebooks
+      .filter((notebook) => {
+        if (
+          query &&
+          !`${notebookDisplayName(notebook)} ${notebook.id}`
+            .toLocaleLowerCase()
+            .includes(query)
+        ) {
+          return false;
+        }
+        if (notebookOwnershipFilter === "owned") return notebook.is_owner !== false;
+        if (notebookOwnershipFilter === "shared") return notebook.is_owner === false;
+        return true;
+      })
+      .sort((left, right) => {
+        if (notebookSort === "title-asc") {
+          return notebookDisplayName(left).localeCompare(notebookDisplayName(right), undefined, {
+            sensitivity: "base",
+          });
+        }
+        const field = notebookSort === "created-desc" ? "created_at" : "modified_at";
+        const leftValue = Date.parse(
+          (field === "modified_at"
+            ? left.modified_at || left.updated_at || left.created_at
+            : left.created_at) || "",
+        );
+        const rightValue = Date.parse(
+          (field === "modified_at"
+            ? right.modified_at || right.updated_at || right.created_at
+            : right.created_at) || "",
+        );
+        return (Number.isNaN(rightValue) ? 0 : rightValue) -
+          (Number.isNaN(leftValue) ? 0 : leftValue);
+      });
+  }, [notebooks, notebookOwnershipFilter, notebookSearch, notebookSort]);
+  const notebookPageCount = Math.max(1, Math.ceil(filteredNotebooks.length / notebooksPerPage));
+  const visibleNotebooks = useMemo(() => {
+    const offset = (notebookPage - 1) * notebooksPerPage;
+    return filteredNotebooks.slice(offset, offset + notebooksPerPage);
+  }, [filteredNotebooks, notebookPage]);
   const ready = backend.status === "ready";
   const canUseDriveExtension = Boolean(window.chrome?.runtime?.sendMessage);
   const canRestartExtension = Boolean(window.notebooklmDesktop?.restartBackend);
   const canLocalLoginSync = Boolean(window.notebooklmDesktop?.localLoginAndSync);
+  const canProfileLogin = Boolean(window.notebooklmDesktop?.openProfileLogin);
   const canResetLocalLogin = Boolean(window.notebooklmDesktop?.resetLocalLogin);
   const canCheckVps = Boolean(window.notebooklmDesktop?.checkVpsConnected);
+  const canRepairDesktopAuth = Boolean(window.notebooklmDesktop?.checkVpsConnected);
   const extensionPillClass =
     extensionStatus === "connected"
       ? "ok"
@@ -331,20 +445,49 @@ function App() {
     [],
   );
 
+  useEffect(() => {
+    setNotebookPage((page) => Math.min(page, notebookPageCount));
+  }, [notebookPageCount]);
+
   useEffect(
-    () => setAuthenticationRecoveryHandler(canUseDriveExtension ? syncCookiesFromExtension : null),
-    [canUseDriveExtension],
+    () =>
+      setAuthenticationRecoveryHandler(
+        canUseDriveExtension
+          ? syncCookiesFromExtension
+          : canRepairDesktopAuth
+            ? recoverDesktopAuthentication
+            : null,
+      ),
+    [canUseDriveExtension, canRepairDesktopAuth],
   );
 
   useEffect(() => {
     if (!browserHosted) return undefined;
     let cancelled = false;
+    const hadCheckpoint = Boolean(readBrowserAuthCheckpoint());
+    setBrowserSessionState("checking");
     api.dashboardSession()
       .then((result) => {
-        if (!cancelled) setBrowserSessionReady(result.authenticated);
+        if (cancelled) return;
+        if (result.authenticated) {
+          setBrowserAuthCheckpoint(saveBrowserAuthCheckpoint());
+          setBrowserSessionError("");
+          setBrowserSessionState("authenticated");
+          return;
+        }
+        clearBrowserAuthCheckpoint();
+        setBrowserAuthCheckpoint(null);
+        setBrowserSessionError(hadCheckpoint ? "Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại." : "");
+        setBrowserSessionState("unauthenticated");
       })
-      .catch(() => {
-        if (!cancelled) setBrowserSessionReady(false);
+      .catch((err) => {
+        if (cancelled) return;
+        clearBrowserAuthCheckpoint();
+        setBrowserAuthCheckpoint(null);
+        setBrowserSessionError(
+          err instanceof Error ? err.message : "Không thể kiểm tra phiên đăng nhập.",
+        );
+        setBrowserSessionState("unauthenticated");
       });
     return () => {
       cancelled = true;
@@ -353,8 +496,14 @@ function App() {
 
   useEffect(() => {
     if (!window.notebooklmDesktop) {
-      if (!browserSessionReady) {
-        setBackend({ status: "stopped", message: "Dashboard login required" });
+      if (browserSessionState !== "authenticated") {
+        setBackend({
+          status: browserSessionState === "checking" ? "starting" : "stopped",
+          message:
+            browserSessionState === "checking"
+              ? "Checking saved login checkpoint..."
+              : "Dashboard login required",
+        });
         return undefined;
       }
       let cancelled = false;
@@ -381,8 +530,10 @@ function App() {
         } catch (err) {
           if (cancelled) return;
           if (isApiAuthenticationError(err)) {
+            clearBrowserAuthCheckpoint();
+            setBrowserAuthCheckpoint(null);
             setBrowserSessionError("Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.");
-            setBrowserSessionReady(false);
+            setBrowserSessionState("unauthenticated");
             return;
           }
           setBackend({
@@ -456,7 +607,7 @@ function App() {
       window.clearInterval(poll);
       unsubscribe();
     };
-  }, [browserSessionReady, appendLog]);
+  }, [browserSessionState, appendLog]);
 
   useEffect(() => {
     if (activeNotebookId) {
@@ -600,6 +751,10 @@ function App() {
         const created = await api.createNotebook(title);
         setNotebooks((items) => [created, ...items]);
         setActiveNotebookId(created.id);
+        setNotebookSearch("");
+        setNotebookOwnershipFilter("all");
+        setNotebookSort("modified-desc");
+        setNotebookPage(1);
         setView("overview");
       } else if (activeNotebook) {
         const renamed = await api.renameNotebook(activeNotebook.id, title);
@@ -681,6 +836,38 @@ function App() {
         message: err instanceof Error ? err.message : "Cookie sync failed",
       });
       throw err;
+    }
+  }
+
+  async function recoverDesktopAuthentication() {
+    const checkConnected = window.notebooklmDesktop?.checkVpsConnected;
+    if (!checkConnected) {
+      throw new Error("NotebookLM auth expired. Use Local login, then retry.");
+    }
+    setVpsChecking(true);
+    setLocalSyncMessage("Repairing saved login...");
+    setError("");
+    appendLog({ level: "info", source: "local", message: "Repairing NotebookLM auth from local checkpoint" });
+    try {
+      const result = await checkConnected();
+      setVpsConnection(result);
+      if (!result.connected) {
+        const message =
+          result.error ||
+          result.status ||
+          "Saved login checkpoint is unavailable. Use Local login, then retry.";
+        setLocalSyncMessage(message);
+        appendLog({ level: "warning", source: "local", message });
+        throw new Error(message);
+      }
+      const message =
+        result.repaired
+          ? "Saved login repaired and synced to VPS"
+          : "Saved login verified on VPS";
+      setLocalSyncMessage(message);
+      appendLog({ level: "success", source: "local", message });
+    } finally {
+      setVpsChecking(false);
     }
   }
 
@@ -838,6 +1025,186 @@ function App() {
     }
   }
 
+  async function runProfile185Login() {
+    const openProfileLogin = window.notebooklmDesktop?.openProfileLogin;
+    const profileLoginStatus = window.notebooklmDesktop?.profileLoginStatus;
+    const finalizeProfileLogin = window.notebooklmDesktop?.finalizeProfileLogin;
+    if (!openProfileLogin || !profileLoginStatus) {
+      setError("Open the desktop app to open Chrome Profile 185.");
+      return;
+    }
+    setProfileLoginRunning(true);
+    setLocalSyncMessage("Opening Chrome Profile 185...");
+    setError("");
+    appendLog({ level: "info", source: "local", message: "Opening Chrome Profile 185 login bridge" });
+    try {
+      const opened = await openProfileLogin();
+      if (!opened.ok) {
+        const message = opened.error || opened.status || "Could not open Chrome Profile 185.";
+        setLocalSyncMessage(opened.status || "Profile launch failed");
+        setError(message);
+        appendLog({ level: "error", source: "local", message });
+        return;
+      }
+      const profileLabel = opened.profile_directory || "Profile 185";
+      if (!opened.login_id) {
+        throw new Error("Chrome Profile 185 launcher did not return a login correlation ID.");
+      }
+      const extensionReloadMessage = opened.extension_reload_required
+        ? ` Reload extension ${opened.extension_version || "old"} → ${opened.extension_source_version || "new"}.`
+        : "";
+      setLocalSyncMessage(
+        `${profileLabel} opened; waiting for extension sync.${extensionReloadMessage}`,
+      );
+      appendLog({
+        level: opened.extension_reload_required ? "warning" : "success",
+        source: "local",
+        message: `${profileLabel} opened in Chrome.${extensionReloadMessage}`,
+      });
+
+      const deadline = Date.now() + 300_000;
+      while (Date.now() < deadline) {
+        const result = await profileLoginStatus(opened.login_id);
+        setVpsConnection(result);
+        if (result.connected) {
+          appendLog({ level: "success", source: "local", message: "Profile 185 session verified on VPS" });
+          if (finalizeProfileLogin) {
+            setLocalSyncMessage("VPS verified; importing Profile 185 cookies locally...");
+            const finalized = await finalizeProfileLogin();
+            setVpsConnection(finalized.connected || result);
+            if (!finalized.ok) {
+              const message =
+                finalized.error ||
+                finalized.login?.stderr?.trim() ||
+                finalized.login?.stdout?.trim() ||
+                finalized.status ||
+                "Profile 185 cookie import failed.";
+              setLocalSyncMessage("VPS verified, local import failed");
+              setError(message);
+              appendLog({ level: "error", source: "local", message });
+              return;
+            }
+          }
+          const count =
+            typeof result.notebook_count === "number" ? `${result.notebook_count} notebooks` : "verified";
+          setLocalSyncMessage(`Profile 185 login verified: ${count}`);
+          appendLog({ level: "success", source: "local", message: `Profile 185 login complete: ${count}` });
+          // The local REST server opened its NotebookLM client before the
+          // Profile 185 storage rewrite. Restart it so the desktop session is
+          // proven against the newly imported cookies as well as the VPS.
+          await restartDesktopBackend();
+          return;
+        }
+        setLocalSyncMessage(
+          result.error || "Waiting for NotebookLM login and extension cookie sync...",
+        );
+        await new Promise((resolve) => window.setTimeout(resolve, 2000));
+      }
+      const message = "Profile 185 login timed out. Complete sign-in in Chrome, then try again.";
+      setLocalSyncMessage("Profile login timed out");
+      setError(message);
+      appendLog({ level: "error", source: "local", message });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Profile 185 login failed";
+      setLocalSyncMessage("Profile login failed");
+      setError(message);
+      appendLog({ level: "error", source: "local", message });
+    } finally {
+      setProfileLoginRunning(false);
+    }
+  }
+
+  async function runHostedProfileLogin() {
+    if (!browserHosted) {
+      await runProfile185Login();
+      return;
+    }
+
+    // Open synchronously from the click gesture so Chrome does not classify the
+    // bridge as an async popup. The server-issued URL is assigned after the
+    // authenticated transaction has been created.
+    const popup = window.open("about:blank", "notebooklm_profile_login", "width=720,height=760");
+    setProfileLoginRunning(true);
+    setLocalSyncMessage("Creating secure VPS login session...");
+    setError("");
+    appendLog({
+      level: "info",
+      source: "extension",
+      message: "Creating server-issued NotebookLM login transaction",
+    });
+
+    try {
+      const started = await api.startHostedProfileLogin();
+      if (!started.bridge_url) {
+        throw new Error("VPS did not return a NotebookLM login bridge URL.");
+      }
+      const bridgeUrl = new URL(started.bridge_url, window.location.origin).href;
+      if (popup) {
+        popup.location.replace(bridgeUrl);
+      } else {
+        throw new Error(
+          `Chrome blocked the login window. Allow popups, then open: ${bridgeUrl}`,
+        );
+      }
+
+      setLocalSyncMessage("Waiting for Chrome Profile 185 and extension sync...");
+      const expiresAt = Date.parse(started.expires_at);
+      const deadline = Number.isFinite(expiresAt) ? expiresAt : Date.now() + 300_000;
+
+      while (Date.now() < deadline) {
+        const result = await api.hostedProfileLoginStatus(started.login_id);
+        if (result.connected) {
+          const connection: VpsConnectionStatus = {
+            ok: true,
+            status: "connected",
+            connected: true,
+            profile_ready: true,
+            cookie_count: result.cookie_count ?? undefined,
+            notebook_count: result.notebook_count ?? null,
+            error: null,
+          };
+          setVpsConnection(connection);
+          setExtensionStatus("connected");
+          const count =
+            typeof result.notebook_count === "number"
+              ? `${result.notebook_count} notebooks`
+              : "verified";
+          setExtensionMessage(
+            typeof result.cookie_count === "number"
+              ? `${result.cookie_count} cookies verified`
+              : "Session verified",
+          );
+          setLocalSyncMessage(`VPS connected: ${count}`);
+          appendLog({
+            level: "success",
+            source: "extension",
+            message: `Hosted Profile 185 login complete: ${count}`,
+          });
+          await refreshNotebooks();
+          return;
+        }
+        if (result.status === "error" || result.status === "expired") {
+          throw new Error(result.error || `Profile login ${result.status}.`);
+        }
+        setLocalSyncMessage(
+          result.status === "syncing"
+            ? "VPS is verifying Profile 185 cookies..."
+            : "Waiting for Chrome Profile 185 and extension sync...",
+        );
+        await new Promise((resolve) => window.setTimeout(resolve, 1500));
+      }
+      throw new Error("Profile 185 login session expired. Start a new login session.");
+    } catch (err) {
+      if (popup && !popup.closed && popup.location.href === "about:blank") popup.close();
+      const message = err instanceof Error ? err.message : "Hosted Profile 185 login failed";
+      setLocalSyncMessage("VPS login failed");
+      setError(message);
+      appendLog({ level: "error", source: "extension", message });
+    } finally {
+      setProfileLoginRunning(false);
+    }
+  }
+
   async function checkVpsConnected() {
     const checkConnected = window.notebooklmDesktop?.checkVpsConnected;
     if (!checkConnected) {
@@ -881,7 +1248,24 @@ function App() {
     });
   }
 
-  if (browserHosted && !browserSessionReady) {
+  async function logoutDashboard() {
+    try {
+      await api.dashboardLogout();
+    } catch {
+      // Clear the local checkpoint even if the cookie is already gone.
+    } finally {
+      clearBrowserAuthCheckpoint();
+      setBrowserAuthCheckpoint(null);
+      setBrowserSessionState("unauthenticated");
+      setBrowserSessionError("");
+    }
+  }
+
+  if (browserHosted && browserSessionState === "checking") {
+    return <BrowserSessionLoadingGate checkpointed={Boolean(browserAuthCheckpoint)} />;
+  }
+
+  if (browserHosted && browserSessionState !== "authenticated") {
     return (
       <BrowserPasswordGate
         error={browserSessionError}
@@ -891,7 +1275,8 @@ function App() {
           setBrowserSessionError("");
           try {
             await api.dashboardLogin(password);
-            setBrowserSessionReady(true);
+            setBrowserAuthCheckpoint(saveBrowserAuthCheckpoint());
+            setBrowserSessionState("authenticated");
           } catch (err) {
             setBrowserSessionError(
               err instanceof Error ? err.message : "Không thể đăng nhập dashboard.",
@@ -978,9 +1363,19 @@ function App() {
                 <span>Reset login</span>
               </button>
               <button
+                className="icon-btn profile-login-btn"
+                onClick={() => runProfile185Login().catch(() => undefined)}
+                disabled={!canProfileLogin || profileLoginRunning || localLoginRunning || localResetRunning}
+                title={canProfileLogin ? `Open Chrome Profile 185: ${localSyncMessage}` : "Open the desktop app to use Chrome Profile 185 login"}
+                aria-label="Login via Chrome 185"
+              >
+                {profileLoginRunning ? <Loader2 size={16} className="spin" /> : <Globe2 size={16} />}
+                <span>Profile 185</span>
+              </button>
+              <button
                 className="icon-btn local-login-btn"
                 onClick={() => runLocalLoginAndSync().catch(() => undefined)}
-                disabled={!canLocalLoginSync || localLoginRunning || localResetRunning}
+                disabled={!canLocalLoginSync || localLoginRunning || localResetRunning || profileLoginRunning}
                 title={canLocalLoginSync ? `Login locally and sync to VPS: ${localSyncMessage}` : "Open the desktop app to login locally"}
                 aria-label="Login locally and sync to VPS"
               >
@@ -1004,18 +1399,33 @@ function App() {
               </span>
             </>
           ) : (
-            <button
-              className="icon-btn"
-              onClick={() => {
-                api.dashboardLogout()
-                  .catch(() => undefined)
-                  .finally(() => setBrowserSessionReady(false));
-              }}
-              title="Đăng xuất dashboard"
-            >
-              <Lock size={16} />
-              <span>Đăng xuất</span>
-            </button>
+            <>
+              <button
+                className="icon-btn profile-login-btn"
+                onClick={() => runHostedProfileLogin().catch(() => undefined)}
+                disabled={profileLoginRunning}
+                title={`Login NotebookLM on VPS: ${localSyncMessage}`}
+                aria-label="Login NotebookLM on VPS with Chrome Profile 185"
+              >
+                {profileLoginRunning ? <Loader2 size={16} className="spin" /> : <Globe2 size={16} />}
+                <span>Login VPS</span>
+              </button>
+              <span className={`status-pill vps-pill ${vpsPillClass}`} title={`VPS: ${localSyncMessage}`}>
+                <ShieldCheck size={14} />
+                <span>VPS</span>
+                <strong>{vpsConnection?.connected ? "Connected" : localSyncMessage}</strong>
+              </span>
+              <button
+                className="icon-btn"
+                onClick={() => {
+                  logoutDashboard().catch(() => undefined);
+                }}
+                title="Đăng xuất dashboard"
+              >
+                <Lock size={16} />
+                <span>Đăng xuất</span>
+              </button>
+            </>
           )}
           {canUseDriveExtension ? (
             <span
@@ -1039,6 +1449,22 @@ function App() {
               <span>Backend</span>
             </button>
           ) : null}
+          {headerViews.map((item) => {
+            const Icon = item.icon;
+            return (
+              <button
+                key={item.id}
+                className={`icon-btn header-view-btn ${view === item.id ? "active" : ""}`}
+                onClick={() => setView(item.id)}
+                disabled={!ready || !activeNotebook}
+                aria-pressed={view === item.id}
+                title={`Open ${item.label}`}
+              >
+                <Icon size={16} />
+                <span>{item.label}</span>
+              </button>
+            );
+          })}
           <span className={`status-pill ${ready ? "ok" : backend.status === "error" ? "bad" : ""}`}>
             {ready ? <CheckCircle2 size={14} /> : <Loader2 size={14} className="spin" />}
             {backend.status}
@@ -1056,8 +1482,12 @@ function App() {
               <Search size={15} />
               <input
                 value={notebookSearch}
-                onChange={(event) => setNotebookSearch(event.target.value)}
+                onChange={(event) => {
+                  setNotebookSearch(event.target.value);
+                  setNotebookPage(1);
+                }}
                 placeholder="Search notebook"
+                aria-label="Search notebooks"
               />
             </label>
             <button
@@ -1069,12 +1499,42 @@ function App() {
               <Plus size={18} />
             </button>
           </div>
+          <div className="notebook-filters">
+            <select
+              value={notebookOwnershipFilter}
+              onChange={(event) => {
+                setNotebookOwnershipFilter(event.target.value as NotebookOwnershipFilter);
+                setNotebookPage(1);
+              }}
+              aria-label="Filter notebooks"
+            >
+              <option value="all">All notebooks</option>
+              <option value="owned">Owned by me</option>
+              <option value="shared">Shared with me</option>
+            </select>
+            <select
+              value={notebookSort}
+              onChange={(event) => {
+                setNotebookSort(event.target.value as NotebookSort);
+                setNotebookPage(1);
+              }}
+              aria-label="Sort notebooks"
+            >
+              <option value="modified-desc">Last updated</option>
+              <option value="created-desc">Newest created</option>
+              <option value="title-asc">Name A–Z</option>
+            </select>
+          </div>
           <div className="sidebar-label">
             <span>Notebooks</span>
-            <strong>{notebookSearch.trim() ? `${filteredNotebooks.length}/${notebooks.length}` : notebooks.length}</strong>
+            <strong>
+              {notebookSearch.trim() || notebookOwnershipFilter !== "all"
+                ? `${filteredNotebooks.length}/${notebooks.length}`
+                : notebooks.length}
+            </strong>
           </div>
           <div className="notebook-list">
-            {filteredNotebooks.length ? filteredNotebooks.map((notebook) => {
+            {visibleNotebooks.length ? visibleNotebooks.map((notebook) => {
               const displayName = notebookDisplayName(notebook);
               return (
                 <div
@@ -1108,6 +1568,29 @@ function App() {
               );
             }) : <div className="empty-row">No matching notebooks</div>}
           </div>
+          <nav className="notebook-pagination" aria-label="Notebook pagination">
+            <button
+              type="button"
+              onClick={() => setNotebookPage((page) => Math.max(1, page - 1))}
+              disabled={notebookPage <= 1}
+              aria-label="Previous notebook page"
+              title="Previous page"
+            >
+              <ChevronLeft size={16} />
+            </button>
+            <span>
+              Page <strong>{notebookPage}</strong> of {notebookPageCount}
+            </span>
+            <button
+              type="button"
+              onClick={() => setNotebookPage((page) => Math.min(notebookPageCount, page + 1))}
+              disabled={notebookPage >= notebookPageCount}
+              aria-label="Next notebook page"
+              title="Next page"
+            >
+              <ChevronRight size={16} />
+            </button>
+          </nav>
         </aside>
 
         <section className="content">
@@ -1125,7 +1608,7 @@ function App() {
                 onRename={openRenameNotebook}
               />
               <nav className="tabs">
-                {views.map((item) => {
+                {notebookViews.map((item) => {
                   const Icon = item.icon;
                   return (
                     <button
@@ -1171,6 +1654,11 @@ function App() {
         open={logManagerOpen}
         logs={logs}
         onToggle={() => setLogManagerOpen((value) => !value)}
+        onCopy={async () => {
+          const text = formatLogEntries(logs);
+          await navigator.clipboard.writeText(text || "No logs captured");
+          appendLog({ level: "success", source: "ui", message: "Logs copied to clipboard" });
+        }}
         onClear={() => {
           setLogs([]);
           appendLog({ level: "info", source: "ui", message: "Logs cleared" });
@@ -1186,6 +1674,7 @@ function App() {
           message={extensionMessage}
           onClose={() => setConnectDialogOpen(false)}
           onOpenNotebookLM={(url) => window.open(url, "_blank", "noopener,noreferrer")}
+          onOpenProfile185={browserHosted ? runHostedProfileLogin : canProfileLogin ? runProfile185Login : undefined}
           onCheck={connectNotebookLM}
           onSync={getCookiesFromExtension}
         />
@@ -1577,7 +2066,7 @@ function StudioPanel({ notebook, sources, jobs, upsertJob, refresh, run }: Param
         <div className="panel-title"><span><Wand2 size={16} /> Studio</span></div>
         <label className="field">
           <span>Artifact</span>
-          <select value={type} onChange={(e) => setType(e.target.value)}>
+          <select aria-label="Artifact type" value={type} onChange={(e) => setType(e.target.value)}>
             {artifactTypes.map((item) => <option key={item} value={item}>{item}</option>)}
           </select>
         </label>
@@ -1656,7 +2145,7 @@ function ArtifactsPanel({ notebook, artifacts, run }: Parameters<typeof ViewPane
         <div className="panel-title"><span><Sparkles size={16} /> Download</span></div>
         <label className="field">
           <span>Artifact type</span>
-          <select value={downloadType} onChange={(e) => setDownloadType(e.target.value)}>
+          <select aria-label="Artifact download type" value={downloadType} onChange={(e) => setDownloadType(e.target.value)}>
             {downloadTypes.map((item) => <option key={item} value={item}>{item}</option>)}
           </select>
         </label>
@@ -2052,6 +2541,10 @@ function mcpHeaderValue(config: McpConfig): string {
   return prefix ? `${prefix} YOUR_MCP_API_KEY` : "YOUR_MCP_API_KEY";
 }
 
+function mcpPermissionCount(config: McpConfig): number {
+  return Object.values(config.permissions || {}).filter((value) => Boolean(value)).length;
+}
+
 function mcpSetupSnippet(config: McpConfig, client: McpClientId): string {
   const remote = {
     url: config.endpoint,
@@ -2181,6 +2674,8 @@ function McpPanel() {
 
   const activeKeys = keys.filter((item) => item.status === "active");
   const tools = config?.features.reduce((total, feature) => total + feature.tools.length, 0) || 0;
+  const docsUrl = config?.endpoints?.docsBaseUrl?.trim() || "";
+  const permissionCount = config ? mcpPermissionCount(config) : 0;
   const snippet = config ? mcpSetupSnippet(config, client) : "Đang tải cấu hình…";
   const quotaPercent = usage?.summary.dailyLimit
     ? Math.min(100, (usage.summary.dailyUsed / usage.summary.dailyLimit) * 100)
@@ -2195,7 +2690,7 @@ function McpPanel() {
       <header className="mcp-portal-header">
         <div>
           <span className="mcp-eyebrow">ACCOUNT SETTINGS / MCP</span>
-          <h2>MCP connections</h2>
+          <h2>MCP API keys & link</h2>
           <p>Kết nối NotebookLM Pro với trợ lý AI bằng managed API key có thể thu hồi.</p>
         </div>
         <span className={`mcp-ready-badge ${error ? "bad" : ""}`}>
@@ -2206,6 +2701,46 @@ function McpPanel() {
 
       {error ? <div className="banner bad">{error}</div> : null}
       {message ? <div className="mcp-message"><CheckCircle2 size={15} />{message}</div> : null}
+
+      <section className="panel mcp-link-panel">
+        <div className="mcp-section-head">
+          <div>
+            <h3><Link2 size={18} /> Link this workspace</h3>
+            <p>
+              Manifest đang chạy quyết định endpoint public, header auth và quyền quản trị.
+            </p>
+          </div>
+          <div className="mcp-section-actions">
+            {docsUrl ? (
+              <button
+                className="btn-secondary compact"
+                type="button"
+                onClick={() => window.open(docsUrl, "_blank", "noopener,noreferrer")}
+              >
+                <ExternalLink size={14} /> Open docs
+              </button>
+            ) : null}
+          </div>
+        </div>
+        <div className="mcp-link-grid">
+          <article>
+            <span>Public endpoint</span>
+            <code>{config?.endpoint || "Đang tải…"}</code>
+          </article>
+          <article>
+            <span>Auth header</span>
+            <code>{config?.auth.header || "Authorization"}</code>
+          </article>
+          <article>
+            <span>Permissions</span>
+            <strong>{permissionCount}</strong>
+          </article>
+          <article>
+            <span>Tool groups</span>
+            <strong>{config?.features.length || 0}</strong>
+          </article>
+        </div>
+      </section>
 
       <section className="panel mcp-key-panel">
         <div className="mcp-section-head">
@@ -2707,11 +3242,13 @@ function LogManager({
   open,
   logs,
   onToggle,
+  onCopy,
   onClear,
 }: {
   open: boolean;
   logs: LogEntry[];
   onToggle: () => void;
+  onCopy: () => Promise<void>;
   onClear: () => void;
 }) {
   const latest = logs[0];
@@ -2732,9 +3269,20 @@ function LogManager({
         <div className="log-manager-body">
           <div className="log-manager-head">
             <span>{latest ? latest.message : "No logs yet"}</span>
-            <button className="icon-btn" type="button" title="Clear logs" onClick={onClear}>
-              <Trash2 size={15} />
-            </button>
+            <div className="log-manager-actions">
+              <button
+                className="icon-btn"
+                type="button"
+                title="Copy logs"
+                aria-label="Copy logs"
+                onClick={() => onCopy().catch(() => undefined)}
+              >
+                <Copy size={15} />
+              </button>
+              <button className="icon-btn" type="button" title="Clear logs" onClick={onClear}>
+                <Trash2 size={15} />
+              </button>
+            </div>
           </div>
           <div className="log-list" role="log" aria-live="polite">
             {logs.length ? logs.map((item) => (
@@ -2751,11 +3299,21 @@ function LogManager({
   );
 }
 
+function formatLogEntries(logs: LogEntry[]): string {
+  return logs
+    .map((item) => {
+      const timestamp = new Date(item.timestamp).toISOString();
+      return `[${timestamp}] [${item.level}/${item.source}] ${item.message}`;
+    })
+    .join("\n");
+}
+
 function ConnectLoginModal({
   status,
   message,
   onClose,
   onOpenNotebookLM,
+  onOpenProfile185,
   onCheck,
   onSync,
 }: {
@@ -2763,6 +3321,7 @@ function ConnectLoginModal({
   message: string;
   onClose: () => void;
   onOpenNotebookLM: (url: string) => void;
+  onOpenProfile185?: () => Promise<void>;
   onCheck: () => Promise<void>;
   onSync: () => Promise<void>;
 }) {
@@ -2812,7 +3371,7 @@ function ConnectLoginModal({
               setVerificationUrl(event.target.value);
               if (verificationUrlError) setVerificationUrlError("");
             }}
-            placeholder="https://notebooklm.google.com/"
+            placeholder="https://notebook.google.com/"
             type="url"
           />
         </label>
@@ -2823,6 +3382,11 @@ function ConnectLoginModal({
           <strong>{message}</strong>
         </span>
         <div className="modal-actions">
+          {onOpenProfile185 ? (
+            <button className="btn-primary" type="button" onClick={() => onOpenProfile185().catch(() => undefined)}>
+              <Globe2 size={16} /> Mở Profile 185
+            </button>
+          ) : null}
           <button className="btn-secondary" type="button" onClick={openVerificationLink}>
             <ExternalLink size={16} /> Mở link xác thực
           </button>

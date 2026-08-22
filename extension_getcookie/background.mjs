@@ -96,14 +96,15 @@ async function checkSyncConnection() {
   return {
     ok: true,
     extension_version: chrome.runtime.getManifest().version,
+    capabilities: { profile_login_correlation: true },
     server: statusUrl.origin,
     ...result,
   };
 }
 
-async function syncNotebookLMCookies() {
+async function syncNotebookLMCookies(profileLoginId) {
   const { endpoint, token } = await getRouteSettings();
-  return syncNotebookLmCookies({ endpoint, token });
+  return syncNotebookLmCookies({ endpoint, token, profileLoginId });
 }
 
 async function clearServerCookieState() {
@@ -140,7 +141,10 @@ chrome.runtime.onMessageExternal.addListener((message, _sender, sendResponse) =>
     return externalResponse(checkSyncConnection, sendResponse);
   }
   if (message.type === 'sync-now') {
-    return externalResponse(syncNotebookLMCookies, sendResponse);
+    return externalResponse(
+      () => syncNotebookLMCookies(message.profile_login_id),
+      sendResponse,
+    );
   }
   if (message.type === 'clear-sync-data') {
     return externalResponse(clearServerCookieState, sendResponse);

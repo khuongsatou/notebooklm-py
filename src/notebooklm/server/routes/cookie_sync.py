@@ -27,12 +27,19 @@ from ...auth import cookie_names_from_storage, extract_cookies_from_storage, mis
 from ...io import atomic_write_json
 from ...paths import get_storage_path
 from .._auth import SERVER_TOKEN_ENV
+from .profile_login import (
+    clear_profile_login_transactions,
+    complete_profile_login,
+    fail_profile_login,
+    mark_profile_login_syncing,
+)
 
 router = APIRouter(prefix="/sync", tags=["sync"])
 
 COOKIE_SYNC_TOKEN_ENV = "NOTEBOOKLM_COOKIE_SYNC_TOKEN"
 COOKIE_SYNC_SOURCE = "drive-down-cookies"
-COOKIE_SYNC_SOURCE_URL = "https://notebooklm.google.com/"
+COOKIE_SYNC_SOURCE_URL = "https://notebook.google.com/"
+COOKIE_SYNC_SOURCE_HOSTS = frozenset({"notebook.google.com", "notebooklm.google.com"})
 COOKIE_SYNC_CHALLENGE_TTL_SECONDS = 120
 COOKIE_SYNC_CAPTURE_MAX_AGE_SECONDS = 300
 
@@ -82,10 +89,13 @@ async def cookie_sync_status(authorization: str | None = Header(None)) -> dict[s
 @router.get("/connected")
 async def cookie_sync_connected(
     request: Request,
+    profile_login_id: str | None = None,
     authorization: str | None = Header(None),
 ) -> dict[str, Any]:
     """Verify whether the synced NotebookLM storage can authenticate live."""
     _require_sync_token(authorization)
+    expected_profile_login_id = _normalize_profile_login_id(profile_login_id)
+    current_profile_login_id = getattr(request.app.state, "cookie_sync_profile_login_id", None)
     storage_path = get_storage_path()
     if not storage_path.exists():
         return {
@@ -96,6 +106,8 @@ async def cookie_sync_connected(
             "cookie_count": 0,
             "notebook_count": None,
             "error": "storage_state.json is not present on the VPS.",
+            "profile_login_id": current_profile_login_id,
+            "profile_login_matched": expected_profile_login_id is None,
         }
 
     try:
@@ -111,6 +123,23 @@ async def cookie_sync_connected(
             "cookie_count": 0,
             "notebook_count": None,
             "error": "storage_state.json cannot be read as valid JSON.",
+            "profile_login_id": current_profile_login_id,
+            "profile_login_matched": expected_profile_login_id is None,
+        }
+
+    if expected_profile_login_id is not None and not hmac.compare_digest(
+        expected_profile_login_id, current_profile_login_id or ""
+    ):
+        return {
+            "ok": True,
+            "status": "waiting_for_profile_login",
+            "connected": False,
+            "profile_ready": True,
+            "cookie_count": cookie_count,
+            "notebook_count": None,
+            "error": "Waiting for the current Chrome Profile login sync.",
+            "profile_login_id": current_profile_login_id,
+            "profile_login_matched": False,
         }
 
     reloaded, reload_error, notebook_count = await _reload_lifespan_client(request)
@@ -122,6 +151,8 @@ async def cookie_sync_connected(
         "cookie_count": cookie_count,
         "notebook_count": notebook_count,
         "error": reload_error,
+        "profile_login_id": current_profile_login_id,
+        "profile_login_matched": True,
     }
 
 
@@ -133,13 +164,19 @@ async def import_cookies(
 ) -> dict[str, Any]:
     """Import extension-exported browser cookies into ``storage_state.json``."""
     _require_sync_token(authorization)
-    _validate_cookie_payload_metadata(payload)
+    profile_login_id = _validate_cookie_payload_metadata(payload)
     _consume_challenge(request, payload.get("challenge"))
+    mark_profile_login_syncing(request, profile_login_id)
     storage_path = get_storage_path()
     imported, backup_path = _import_cookie_payload(payload, storage_path)
     reloaded, reload_error, notebook_count = await _reload_lifespan_client(request)
     if not reloaded:
         _restore_previous_storage(storage_path, backup_path)
+        fail_profile_login(
+            request,
+            profile_login_id,
+            "VPS received cookies but live NotebookLM authentication failed.",
+        )
         raise HTTPException(
             status_code=401,
             detail=(
@@ -147,7 +184,15 @@ async def import_cookies(
                 f"authentication: {reload_error or 'authentication verification failed'}"
             ),
         )
+    if profile_login_id is not None:
+        request.app.state.cookie_sync_profile_login_id = profile_login_id
     persisted_count = len(imported.get("cookies", []))
+    complete_profile_login(
+        request,
+        profile_login_id,
+        cookie_count=persisted_count,
+        notebook_count=notebook_count,
+    )
     return {
         "ok": True,
         "status": "ok",
@@ -160,6 +205,8 @@ async def import_cookies(
         "auth_verified": True,
         "notebook_count": notebook_count,
         "restart_required": False,
+        "profile_login_id": profile_login_id,
+        "profile_login_matched": profile_login_id is not None,
     }
 
 
@@ -176,6 +223,8 @@ async def clear_cookies(
     backup_deleted = backup_path.exists()
     storage_path.unlink(missing_ok=True)
     backup_path.unlink(missing_ok=True)
+    request.app.state.cookie_sync_profile_login_id = None
+    clear_profile_login_transactions(request)
     client_closed, close_error = await _clear_lifespan_client(request)
     return {
         "ok": True,
@@ -203,7 +252,23 @@ def _consume_challenge(request: Request, challenge: Any) -> None:
         raise HTTPException(status_code=400, detail="Cookie-sync challenge is invalid or expired.")
 
 
-def _validate_cookie_payload_metadata(payload: Any) -> None:
+def _normalize_profile_login_id(value: Any) -> str | None:
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str):
+        raise HTTPException(status_code=400, detail="Profile login correlation ID is invalid.")
+    try:
+        parsed = uuid.UUID(value)
+    except ValueError:
+        raise HTTPException(
+            status_code=400, detail="Profile login correlation ID is invalid."
+        ) from None
+    if parsed.version != 4 or str(parsed) != value.strip().lower():
+        raise HTTPException(status_code=400, detail="Profile login correlation ID is invalid.")
+    return str(parsed)
+
+
+def _validate_cookie_payload_metadata(payload: Any) -> str | None:
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Cookie-sync payload must be a JSON object.")
     if payload.get("source") != COOKIE_SYNC_SOURCE:
@@ -231,6 +296,7 @@ def _validate_cookie_payload_metadata(payload: Any) -> None:
     age = (datetime.now(timezone.utc) - captured.astimezone(timezone.utc)).total_seconds()
     if age < -30 or age > COOKIE_SYNC_CAPTURE_MAX_AGE_SECONDS:
         raise HTTPException(status_code=400, detail="Cookie capture is stale or from the future.")
+    return _normalize_profile_login_id(payload.get("profile_login_id"))
 
 
 def _is_trusted_source_url(source_url: Any) -> bool:
@@ -242,7 +308,7 @@ def _is_trusted_source_url(source_url: Any) -> bool:
         return False
     if parsed.scheme != "https":
         return False
-    if parsed.hostname != "notebooklm.google.com":
+    if parsed.hostname not in COOKIE_SYNC_SOURCE_HOSTS:
         return False
     if parsed.username is not None or parsed.password is not None:
         return False

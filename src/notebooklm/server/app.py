@@ -46,6 +46,7 @@ from .routes import (
     mcp_keys,
     notebooks,
     notes,
+    profile_login,
     research,
     settings,
     share,
@@ -165,6 +166,7 @@ def create_app(*, client_factory: ClientFactory | None = None) -> FastAPI:
         return {"ok": True}
 
     app.include_router(cookie_sync.router)
+    app.include_router(profile_login.router)
     app.include_router(dashboard_auth.router)
 
     # Every /v1 route requires bearer/session auth plus the loopback-Host dependency.

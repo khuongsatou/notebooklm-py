@@ -51,3 +51,6 @@ workflows/
 
 # Local working notes (process scratch — not shipped)
 docs/scratch/
+# Local authentication exports and browser evidence must never be committed.
+drive.google.com_cookies.txt
+artifacts/

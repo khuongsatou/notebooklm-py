@@ -87,6 +87,7 @@ def public_mcp_config() -> dict[str, Any]:
     product = manifest["product"]
     endpoints = manifest["endpoints"]
     mcp = manifest["mcp"]
+    permissions = manifest.get("permissions") or {}
     auth = mcp.get("auth") or {}
     return {
         "ok": True,
@@ -96,12 +97,25 @@ def public_mcp_config() -> dict[str, Any]:
             "description": product.get("description", ""),
         },
         "endpoint": f"{endpoints['mcp_base_url']}{endpoints['mcp_path']}",
+        "endpoints": {
+            "appBaseUrl": endpoints.get("app_base_url", ""),
+            "authBaseUrl": endpoints.get("auth_base_url", ""),
+            "apiBaseUrl": endpoints.get("api_base_url", ""),
+            "mcpBaseUrl": endpoints.get("mcp_base_url", ""),
+            "mediaBaseUrl": endpoints.get("media_base_url", ""),
+            "docsBaseUrl": endpoints.get("docs_base_url", ""),
+        },
         "transport": mcp.get("transport", "streamable-http"),
         "protocolVersion": mcp.get("protocol_version", "2025-03-26"),
         "auth": {
             "type": auth.get("type", "header"),
             "header": auth.get("header", "Authorization"),
             "valuePrefix": auth.get("value_prefix", "Bearer"),
+        },
+        "permissions": {
+            "manageKey": permissions.get("manage_key", ""),
+            "viewUsage": permissions.get("view_usage", ""),
+            "callTools": permissions.get("call_tools", ""),
         },
         "features": manifest.get("features", []),
     }

@@ -244,6 +244,8 @@ REQUIRED_COOKIE_DOMAINS: frozenset[str] = frozenset(
         ".google.com",
         "google.com",  # Host-only Domain=google.com cookies (rare but possible)
         # Playwright storage_state may preserve the leading dot for NotebookLM cookies.
+        ".notebook.google.com",
+        "notebook.google.com",
         ".notebooklm.google.com",
         "notebooklm.google.com",
         ".notebooklm.cloud.google.com",
@@ -530,6 +532,10 @@ def _auth_domain_priority(domain: str) -> int:
     if domain == ".notebooklm.google.com":
         return 3
     if domain == "notebooklm.google.com":
+        return 2
+    if domain == ".notebook.google.com":
+        return 3
+    if domain == "notebook.google.com":
         return 2
     if domain == ".notebooklm.cloud.google.com":
         return 3

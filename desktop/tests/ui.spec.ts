@@ -102,7 +102,8 @@ test.beforeEach(async ({ page }) => {
         },
       });
       (window as typeof window & { __backendRequests?: string[]; __restartBackendCalls?: number }).__backendRequests = [];
-      (window as typeof window & { __backendRequests?: string[]; __restartBackendCalls?: number }).__restartBackendCalls = 0;
+      (window as typeof window & { __backendRequests?: string[]; __restartBackendCalls?: number; __vpsRepairCalls?: number }).__restartBackendCalls = 0;
+      (window as typeof window & { __backendRequests?: string[]; __restartBackendCalls?: number; __vpsRepairCalls?: number }).__vpsRepairCalls = 0;
       (window as typeof window & {
         __emitBackendStatus?: (payload: { status: string; message?: string }) => void;
       }).__emitBackendStatus = (payload) => {
@@ -119,6 +120,35 @@ test.beforeEach(async ({ page }) => {
             backend: backendInfo,
           };
         },
+        async openProfileLogin() {
+          return {
+            ok: true,
+            status: "opened",
+            login_id: "11111111-1111-4111-8111-111111111111",
+            profile_directory: "Profile 185",
+            profile_exists: true,
+          };
+        },
+        async profileLoginStatus() {
+          return {
+            ok: true,
+            status: "connected",
+            connected: true,
+            notebook_count: state.notebooks.length,
+          };
+        },
+        async finalizeProfileLogin() {
+          return {
+            ok: true,
+            status: "connected",
+            connected: {
+              ok: true,
+              status: "connected",
+              connected: true,
+              notebook_count: state.notebooks.length,
+            },
+          };
+        },
         async restartBackend() {
           (window as typeof window & { __restartBackendCalls?: number }).__restartBackendCalls =
             ((window as typeof window & { __restartBackendCalls?: number }).__restartBackendCalls || 0) + 1;
@@ -126,6 +156,17 @@ test.beforeEach(async ({ page }) => {
             name: "notebooklm-pro-desktop",
             version: "0.1.0",
             backend: backendInfo,
+          };
+        },
+        async checkVpsConnected() {
+          (window as typeof window & { __vpsRepairCalls?: number }).__vpsRepairCalls =
+            ((window as typeof window & { __vpsRepairCalls?: number }).__vpsRepairCalls || 0) + 1;
+          return {
+            ok: true,
+            status: "connected",
+            connected: true,
+            repaired: true,
+            notebook_count: state.notebooks.length,
           };
         },
         async backendRequest(request) {
@@ -347,9 +388,22 @@ test.beforeEach(async ({ page }) => {
               ok: true,
               product: { name: "NotebookLM Pro", slug: "notebooklm-pro" },
               endpoint: "https://notebooklm.example.test/mcp",
+              endpoints: {
+                appBaseUrl: "https://notebooklm.example.test",
+                authBaseUrl: "https://notebooklm.example.test",
+                apiBaseUrl: "https://notebooklm.example.test",
+                mcpBaseUrl: "https://notebooklm.example.test",
+                mediaBaseUrl: "https://notebooklm.example.test",
+                docsBaseUrl: "https://docs.example.test/mcp",
+              },
               transport: "streamable-http",
               protocolVersion: "2025-03-26",
               auth: { type: "header", header: "Authorization", valuePrefix: "Bearer" },
+              permissions: {
+                manageKey: "mcp-key:manage",
+                viewUsage: "mcp-usage:read",
+                callTools: "mcp-tools:call",
+              },
               features: [{ id: "notebooks", label: "Notebooks", tools: ["notebook_list", "notebook_create"] }],
             };
           }
@@ -506,6 +560,10 @@ test("overview and version modal stay inside viewport", async ({ page }) => {
     dockOrder.findIndex((item) => item.startsWith("Drive Down Cookies:")),
   );
   expect(dockOrder.findIndex((item) => item.startsWith("Drive Down Cookies:"))).toBeLessThan(
+    dockOrder.indexOf("Open MCP"),
+  );
+  expect(dockOrder.indexOf("Open MCP")).toBeLessThan(dockOrder.indexOf("Open Settings"));
+  expect(dockOrder.indexOf("Open Settings")).toBeLessThan(
     dockOrder.findIndex((item) => item.includes("ready")),
   );
   await expectSidebarContained(page);
@@ -527,8 +585,8 @@ test("notebook open buttons launch Google NotebookLM URL", async ({ page }) => {
       page.evaluate(() => (window as typeof window & { __openedExternal?: string[] }).__openedExternal),
     )
     .toEqual([
-      "https://notebooklm.google.com/notebook/nb-1",
-      "https://notebooklm.google.com/notebook/nb-1",
+      "https://notebook.google.com/notebook/nb-1",
+      "https://notebook.google.com/notebook/nb-1",
     ]);
 });
 
@@ -581,6 +639,58 @@ test("status code 16 automatically syncs cookies and retries the failed request 
       ),
     )
     .toBe(2);
+  await expect(page.locator(".error-banner")).toHaveCount(0);
+});
+
+test("status code 16 uses desktop checkpoint repair when the extension is unavailable", async ({
+  page,
+}) => {
+  await page.evaluate(() => {
+    Object.defineProperty(window, "chrome", {
+      configurable: true,
+      value: undefined,
+    });
+    const bridge = window.notebooklmDesktop;
+    if (!bridge) throw new Error("Desktop bridge mock is unavailable");
+    const originalRequest = bridge.backendRequest.bind(bridge);
+    let rejectNotebookListOnce = true;
+    bridge.backendRequest = async (request) => {
+      if (request.path === "/v1/notebooks" && (request.method || "GET") === "GET") {
+        const testWindow = window as typeof window & { __authRecoveryNotebookAttempts?: number };
+        testWindow.__authRecoveryNotebookAttempts =
+          (testWindow.__authRecoveryNotebookAttempts || 0) + 1;
+      }
+      if (
+        rejectNotebookListOnce &&
+        request.path === "/v1/notebooks" &&
+        (request.method || "GET") === "GET"
+      ) {
+        rejectNotebookListOnce = false;
+        throw new Error(
+          "Error invoking remote method 'backend:request': Error: RPC wXbhsf returned null result with status code 16 (Unauthenticated). Found IDs: ['wXbhsf'].",
+        );
+      }
+      return originalRequest(request);
+    };
+  });
+
+  await page.getByTitle("Refresh notebooks").click();
+
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (window as typeof window & { __authRecoveryNotebookAttempts?: number })
+            .__authRecoveryNotebookAttempts,
+      ),
+    )
+    .toBe(2);
+  await expect
+    .poll(() =>
+      page.evaluate(() => (window as typeof window & { __vpsRepairCalls?: number }).__vpsRepairCalls),
+    )
+    .toBe(1);
+  await expect(page.getByTitle("VPS: Saved login repaired and synced to VPS")).toBeVisible();
   await expect(page.locator(".error-banner")).toHaveCount(0);
 });
 
@@ -680,6 +790,55 @@ test("blank notebook titles render a stable accessible fallback", async ({ page 
   await expect(page.getByRole("button", { name: fallbackName, exact: true })).toBeVisible();
 });
 
+test("notebook pagination, ownership filter and sorting work together", async ({ page }) => {
+  await page.evaluate(() => {
+    const bridge = window.notebooklmDesktop;
+    if (!bridge) throw new Error("Desktop bridge mock is unavailable");
+    const originalRequest = bridge.backendRequest.bind(bridge);
+    bridge.backendRequest = async (request) => {
+      if (request.path === "/v1/notebooks" && (request.method || "GET") === "GET") {
+        return {
+          notebooks: Array.from({ length: 13 }, (_, index) => {
+            const number = index + 1;
+            return {
+              id: `page-${number}`,
+              title: `Pagination Notebook ${String(number).padStart(2, "0")}`,
+              is_owner: number % 2 === 1,
+              created_at: `2026-08-${String(number).padStart(2, "0")}T00:00:00Z`,
+              modified_at: `2026-08-${String(number).padStart(2, "0")}T12:00:00Z`,
+            };
+          }),
+        };
+      }
+      return originalRequest(request);
+    };
+  });
+
+  await page.getByTitle("Refresh notebooks").click();
+  await expect(page.locator(".notebook-row")).toHaveCount(10);
+  await expect(page.getByText("Page 1 of 2", { exact: true })).toBeVisible();
+
+  await page.getByRole("button", { name: "Next notebook page" }).click();
+  await expect(page.locator(".notebook-row")).toHaveCount(3);
+  await expect(page.getByText("Page 2 of 2", { exact: true })).toBeVisible();
+  await expect(page.getByText("Pagination Notebook 01", { exact: true })).toBeVisible();
+
+  await page.getByRole("textbox", { name: "Search notebooks" }).fill("Notebook 07");
+  await expect(page.locator(".notebook-row")).toHaveCount(1);
+  await expect(page.getByText("Page 1 of 1", { exact: true })).toBeVisible();
+  await expect(page.getByText("1/13", { exact: true })).toBeVisible();
+
+  await page.getByRole("textbox", { name: "Search notebooks" }).clear();
+  await page.getByRole("combobox", { name: "Filter notebooks" }).selectOption("shared");
+  await expect(page.locator(".notebook-row")).toHaveCount(6);
+  await expect(page.getByText("6/13", { exact: true })).toBeVisible();
+
+  await page.getByRole("combobox", { name: "Sort notebooks" }).selectOption("title-asc");
+  await expect(page.locator(".notebook-title").first()).toHaveText("Pagination Notebook 02");
+  await expect(page.getByRole("button", { name: "Previous notebook page" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Next notebook page" })).toBeDisabled();
+});
+
 test("all workspace tabs render without layout overflow", async ({ page }) => {
   const tabs = [
     "Overview",
@@ -690,7 +849,6 @@ test("all workspace tabs render without layout overflow", async ({ page }) => {
     "Notes",
     "Verify",
     "Share",
-    "MCP",
   ];
 
   for (const tab of tabs) {
@@ -701,14 +859,18 @@ test("all workspace tabs render without layout overflow", async ({ page }) => {
     await expectNoVisibleOverlap(page);
   }
 
-  for (const tab of ["Research", "Labels", "Settings"]) {
+  for (const tab of ["Research", "Labels"]) {
     const button = page.locator(".tabs").getByRole("button", { name: tab, exact: true });
     await expect(button).toBeEnabled();
   }
+  await expect(page.locator(".tabs").getByRole("button", { name: "MCP", exact: true })).toHaveCount(0);
+  await expect(page.locator(".tabs").getByRole("button", { name: "Settings", exact: true })).toHaveCount(0);
+  await expect(page.locator(".status-dock").getByRole("button", { name: "MCP", exact: true })).toBeEnabled();
+  await expect(page.locator(".status-dock").getByRole("button", { name: "Settings", exact: true })).toBeEnabled();
 });
 
 test("late backend log events do not hide ready workspace tabs", async ({ page }) => {
-  await expect(page.locator(".tabs").getByRole("button", { name: "MCP", exact: true })).toBeVisible();
+  await expect(page.locator(".status-dock").getByRole("button", { name: "MCP", exact: true })).toBeVisible();
 
   await page.evaluate(() => {
     (window as typeof window & {
@@ -717,13 +879,16 @@ test("late backend log events do not hide ready workspace tabs", async ({ page }
   });
 
   await expect(page.locator(".status-pill.ok", { hasText: "ready" })).toBeVisible();
-  await expect(page.locator(".tabs").getByRole("button", { name: "MCP", exact: true })).toBeVisible();
+  await expect(page.locator(".status-dock").getByRole("button", { name: "MCP", exact: true })).toBeVisible();
 });
 
 test("MCP tab creates a one-time key, copies setup and revokes it", async ({ page }) => {
   await clickTab(page, "MCP");
-  await expect(page.getByRole("heading", { name: "MCP connections" })).toBeVisible();
-  await expect(page.getByText("https://notebooklm.example.test/mcp", { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "MCP API keys & link" })).toBeVisible();
+  await expect(
+    page.locator(".mcp-link-panel").getByText("https://notebooklm.example.test/mcp", { exact: true }),
+  ).toBeVisible();
+  await page.locator(".mcp-link-panel").getByRole("button", { name: "Open docs" }).click();
 
   await page.getByPlaceholder("Ví dụ: Claude Desktop").fill("Claude Desktop");
   await page.getByRole("button", { name: "Generate New Key" }).click();
@@ -741,6 +906,9 @@ test("MCP tab creates a one-time key, copies setup and revokes it", async ({ pag
 
   await page.getByRole("button", { name: "Thu hồi key Claude Desktop" }).click();
   await expect(page.getByText("Revoked", { exact: true })).toBeVisible();
+  await expect.poll(() =>
+    page.evaluate(() => (window as typeof window & { __openedExternal?: string[] }).__openedExternal),
+  ).toContain("https://docs.example.test/mcp");
   await expectNoHorizontalOverflow(page);
 });
 
@@ -862,12 +1030,18 @@ test("remaining MVP buttons produce visible state changes or backend calls", asy
   await expect(page.getByRole("dialog")).toHaveCount(0);
 });
 
+test("Profile 185 login runs the native launch, VPS verification, and local finalize flow", async ({ page }) => {
+  await page.getByRole("button", { name: "Login via Chrome 185" }).click();
+  await expect(page.getByTitle(/VPS:/)).toContainText("Connected");
+  await expect(page.getByTitle(/VPS:/)).toHaveAttribute("title", /Profile 185 login verified/);
+});
+
 test("source, chat, studio, notes, and share flows keep panels stable", async ({ page }) => {
   await clickTab(page, "Sources");
   await page.getByPlaceholder("https://...").fill("https://example.com/new");
   await page.getByRole("button", { name: "Add" }).click();
   await expect(page.getByText("New URL")).toBeVisible();
-  await page.getByRole("button", { name: "File" }).click();
+  await page.getByRole("button", { name: "File", exact: true }).click();
   await page.locator('input[type="file"]').setInputFiles({
     name: "brief.txt",
     mimeType: "text/plain",
@@ -905,12 +1079,12 @@ test("source, chat, studio, notes, and share flows keep panels stable", async ({
   await expect(page.getByText("2 checks / verified")).toBeVisible();
 
   await clickTab(page, "Studio");
-  await page.locator("select").first().selectOption("quiz");
+  await page.getByLabel("Artifact type").selectOption("quiz");
   await page.getByRole("button", { name: "Generate" }).click();
   await expect(page.getByText("quiz generation")).toBeVisible();
 
   await clickTab(page, "Artifacts");
-  await page.locator("select").first().selectOption("report");
+  await page.getByLabel("Artifact download type").selectOption("report");
   await page.getByRole("button", { name: "Download" }).click();
   await expect(page.getByText("Saved notebooklm-report.md")).toBeVisible();
 
@@ -939,7 +1113,7 @@ test("source, chat, studio, notes, and share flows keep panels stable", async ({
   await expect(page.getByRole("button", { name: /QA label 1 source/ })).toBeVisible();
 
   await clickTab(page, "Settings");
-  await page.locator("select").selectOption("vi");
+  await page.getByLabel("Output language").selectOption("vi");
   await page.getByRole("button", { name: "Save language" }).click();
   await expect(page.locator(".json-preview", { hasText: '"language_name": "Tiếng Việt"' })).toBeVisible();
   await page.getByRole("button", { name: "Check update" }).click();
@@ -955,6 +1129,12 @@ test("log manager expands, collapses and clears captured logs", async ({ page })
   await toggle.click();
   await expect(toggle).toHaveAttribute("aria-expanded", "true");
   await expect(page.getByRole("log")).toContainText("Log manager initialized");
+
+  await page.getByTitle("Copy logs").click();
+  await expect.poll(() =>
+    page.evaluate(() => (window as typeof window & { __copiedText?: string }).__copiedText),
+  ).toContain("[info/ui] Log manager initialized");
+  await expect(page.getByRole("log")).toContainText("Logs copied to clipboard");
 
   await page.getByTitle("Clear logs").click();
   await expect(page.getByRole("log")).toContainText("Logs cleared");
@@ -977,10 +1157,18 @@ test("browser-only frontend persists an HttpOnly dashboard session", async ({ br
   const page = await browser.newPage({ viewport: { width: 1280, height: 760 } });
   const authHeaders: string[] = [];
   let authenticated = false;
+  let holdSessionResponse = false;
+  let releaseSessionResponse: (() => void) | null = null;
+  const sessionResponseReady = new Promise<void>((resolve) => {
+    releaseSessionResponse = resolve;
+  });
   await page.route("**/auth/**", async (route) => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
     if (path === "/auth/session") {
+      if (holdSessionResponse) {
+        await sessionResponseReady;
+      }
       await route.fulfill({ json: { authenticated } });
       return;
     }
@@ -1056,11 +1244,103 @@ test("browser-only frontend persists an HttpOnly dashboard session", async ({ br
   expect(authHeaders.every((value) => value === "")).toBe(true);
   await expectNoHorizontalOverflow(page);
 
+  holdSessionResponse = true;
   await page.reload();
+  await expect(page.getByText("Khôi phục phiên đăng nhập đã lưu...")).toBeVisible();
+  await expect(page.getByPlaceholder("Nhập mật khẩu dashboard")).toHaveCount(0);
+  releaseSessionResponse?.();
   await expect(page.getByText("Production smoke notebook").first()).toBeVisible();
 
   await page.getByRole("button", { name: "Đăng xuất" }).click();
   await expect(page.getByPlaceholder("Nhập mật khẩu dashboard")).toBeVisible();
+  await page.close();
+});
+
+test("hosted dashboard creates and polls a server-issued Profile 185 login", async ({ browser }) => {
+  const page = await browser.newPage({ viewport: { width: 1280, height: 760 } });
+  const loginId = "22222222-2222-4222-8222-222222222222";
+  let statusPolls = 0;
+
+  await page.addInitScript(() => {
+    const popup = {
+      closed: false,
+      location: {
+        href: "about:blank",
+        replace(url: string) {
+          this.href = url;
+          (window as typeof window & { __openedProfileLogin?: string }).__openedProfileLogin = url;
+        },
+      },
+      close() {
+        this.closed = true;
+      },
+    };
+    window.open = (() => popup as unknown as Window) as typeof window.open;
+  });
+
+  await page.route("**/auth/**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === "/auth/session") {
+      await route.fulfill({ json: { authenticated: true } });
+      return;
+    }
+    if (path === "/auth/profile-login/start") {
+      await route.fulfill({
+        json: {
+          ok: true,
+          login_id: loginId,
+          status: "waiting_for_extension",
+          connected: false,
+          bridge_url: `/profile-login?notebooklm_profile_login=1&profile_login_id=${loginId}`,
+          created_at: new Date().toISOString(),
+          expires_at: new Date(Date.now() + 300_000).toISOString(),
+        },
+      });
+      return;
+    }
+    if (path === "/auth/profile-login/status") {
+      statusPolls += 1;
+      await route.fulfill({
+        json: {
+          ok: true,
+          login_id: loginId,
+          status: "connected",
+          connected: true,
+          cookie_count: 26,
+          notebook_count: 0,
+          created_at: new Date().toISOString(),
+          expires_at: new Date(Date.now() + 300_000).toISOString(),
+        },
+      });
+      return;
+    }
+    await route.fulfill({ status: 404, json: { error: { message: "not found" } } });
+  });
+  await page.route("**/v1/**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === "/v1/status") {
+      await route.fulfill({ json: { ok: true, server: "notebooklm-server", version: "0.8.0" } });
+      return;
+    }
+    if (path === "/v1/notebooks") {
+      await route.fulfill({ json: { notebooks: [] } });
+      return;
+    }
+    await route.fulfill({ json: {} });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "Login NotebookLM on VPS with Chrome Profile 185" }).click();
+
+  await expect.poll(() =>
+    page.evaluate(() => (window as typeof window & { __openedProfileLogin?: string }).__openedProfileLogin),
+  ).toContain(`/profile-login?notebooklm_profile_login=1&profile_login_id=${loginId}`);
+  await expect.poll(() => statusPolls).toBeGreaterThan(0);
+  await expect(page.locator(".vps-pill")).toContainText("Connected");
+  await expect(page.locator(".vps-pill")).toHaveAttribute(
+    "title",
+    "VPS: VPS connected: 0 notebooks",
+  );
   await page.close();
 });
 
@@ -1074,7 +1354,10 @@ async function expectNoHorizontalOverflow(page: Page) {
 }
 
 async function clickTab(page: Page, name: string) {
-  await page.locator(".tabs").getByRole("button", { name, exact: true }).click();
+  await page
+    .locator(".tabs, .status-dock")
+    .getByRole("button", { name, exact: true })
+    .click();
 }
 
 async function backendRequestCount(page: Page, pattern: string) {

@@ -21,6 +21,9 @@ export type Notebook = {
   title: string;
   created_at?: string;
   updated_at?: string;
+  modified_at?: string;
+  sources_count?: number;
+  is_owner?: boolean;
 };
 
 export type Source = {
@@ -124,6 +127,21 @@ export type McpFeature = {
   tools: string[];
 };
 
+export type McpConfigEndpoints = {
+  appBaseUrl?: string;
+  authBaseUrl?: string;
+  apiBaseUrl?: string;
+  mcpBaseUrl?: string;
+  mediaBaseUrl?: string;
+  docsBaseUrl?: string;
+};
+
+export type McpConfigPermissions = {
+  manageKey?: string;
+  viewUsage?: string;
+  callTools?: string;
+};
+
 export type McpConfig = {
   ok: boolean;
   product: {
@@ -132,6 +150,7 @@ export type McpConfig = {
     description?: string;
   };
   endpoint: string;
+  endpoints?: McpConfigEndpoints;
   transport: string;
   protocolVersion: string;
   auth: {
@@ -139,6 +158,7 @@ export type McpConfig = {
     header: string;
     valuePrefix?: string;
   };
+  permissions?: McpConfigPermissions;
   features: McpFeature[];
 };
 
@@ -252,6 +272,41 @@ export type VpsConnectionStatus = {
   error?: string | null;
 };
 
+export type ProfileLoginOpenResult = {
+  ok: boolean;
+  status: string;
+  login_id?: string;
+  url?: string;
+  chrome_path?: string;
+  chrome_exists?: boolean;
+  profile_directory?: string;
+  profile_path?: string;
+  profile_exists?: boolean;
+  profile_name?: string;
+  profile_email?: string;
+  extension_configured?: boolean;
+  extension_id?: string;
+  extension_path?: string;
+  extension_version?: string;
+  extension_source_version?: string;
+  extension_reload_required?: boolean;
+  extension_service_worker_started?: boolean;
+  error?: string;
+};
+
+export type HostedProfileLoginTransaction = {
+  ok: boolean;
+  login_id: string;
+  status: "waiting_for_extension" | "syncing" | "connected" | "error" | "expired";
+  connected: boolean;
+  bridge_url?: string;
+  created_at: string;
+  expires_at: string;
+  cookie_count?: number | null;
+  notebook_count?: number | null;
+  error?: string | null;
+};
+
 export type LocalLoginSyncResult = {
   ok: boolean;
   status: string;
@@ -308,6 +363,9 @@ export type VerificationRecord = {
 export type DesktopBridge = {
   getAppInfo(): Promise<AppInfo>;
   restartBackend?(): Promise<AppInfo>;
+  openProfileLogin?(): Promise<ProfileLoginOpenResult>;
+  profileLoginStatus?(loginId: string): Promise<VpsConnectionStatus>;
+  finalizeProfileLogin?(): Promise<LocalLoginSyncResult>;
   localLoginAndSync?(): Promise<LocalLoginSyncResult>;
   resetLocalLogin?(): Promise<LocalLoginResetResult>;
   checkVpsConnected?(): Promise<VpsConnectionStatus>;
@@ -340,6 +398,11 @@ export type DriveDownCookiesResponse = {
   client_reloaded?: boolean;
   auth_verified?: boolean;
   restart_required?: boolean;
+  profile_login_id?: string | null;
+  profile_login_matched?: boolean;
+  capabilities?: {
+    profile_login_correlation?: boolean;
+  };
 };
 
 export type ExternalExtensionRuntime = {

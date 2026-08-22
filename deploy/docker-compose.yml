@@ -26,6 +26,7 @@ services:
     user: "${NOTEBOOKLM_UID:-1000}:${NOTEBOOKLM_GID:-1000}"
     environment:
       NOTEBOOKLM_DEPLOY_ENV: ${NOTEBOOKLM_DEPLOY_ENV:-development}
+      NOTEBOOKLM_BASE_URL: ${NOTEBOOKLM_BASE_URL:-https://notebook.google.com}
       # Bearer token clients present (Authorization: Bearer ...). Env-only. OPTIONAL
       # here so an OAuth-ONLY deploy (claude.ai, no Claude Code) works — set the bearer
       # and/or the OAuth vars below. The server's own fail-closed guard refuses to start

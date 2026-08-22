@@ -1,9 +1,10 @@
 import getAllCookies from './get_all_cookies.mjs';
 
 export const NOTEBOOKLM_ENTRY_URL = 'https://notebooklm.google.com/';
-export const NOTEBOOKLM_SOURCE_URL = 'https://notebooklm.google.com/';
+export const NOTEBOOKLM_SOURCE_URL = 'https://notebook.google.com/';
 export const NOTEBOOKLM_HOST = 'notebooklm.google.com';
-const NOTEBOOKLM_HOSTS = new Set([NOTEBOOKLM_HOST]);
+export const NOTEBOOKLM_APP_HOST = 'notebook.google.com';
+const NOTEBOOKLM_HOSTS = new Set([NOTEBOOKLM_HOST, NOTEBOOKLM_APP_HOST]);
 const NOTEBOOKLM_AUTH_HOST = 'accounts.google.com';
 const NOTEBOOKLM_UNAVAILABLE_HOST = 'notebooklm.google';
 
@@ -13,6 +14,15 @@ function parseUrl(url, label) {
   } catch {
     throw new Error(`${label} is not a valid URL.`);
   }
+}
+
+function normalizeProfileLoginId(value) {
+  const normalized = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  if (!normalized) return null;
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(normalized)) {
+    throw new Error('Profile login correlation ID is invalid.');
+  }
+  return normalized;
 }
 
 export function isNotebookLmUrl(url) {
@@ -75,19 +85,23 @@ async function settleNotebookLmTab(tab) {
 }
 
 export async function ensureNotebookLmTab() {
-  const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (activeTab?.id && activeTab?.url && isNotebookLmUrl(activeTab.url)) {
-    const currentUrl = new URL(activeTab.url);
-    if (currentUrl.href === NOTEBOOKLM_ENTRY_URL) {
-      await chrome.tabs.reload(activeTab.id);
-      return settleNotebookLmTab(activeTab);
-    }
-    const tab = await chrome.tabs.update(activeTab.id, {
-      url: NOTEBOOKLM_ENTRY_URL,
-      active: true,
-    });
-    return settleNotebookLmTab(await waitForTabUrl(tab.id));
-  }
+  // Search every window in this extension's Chrome profile. The bridge page
+  // may be backgrounded while the user completes Google sign-in in another
+  // window; the extension itself is still scoped to Profile 185.
+  const tabs = await chrome.tabs.query({});
+  const notebookTab = tabs.find((tab) => tab?.id && tab?.url && isNotebookLmUrl(tab.url));
+  if (notebookTab) return settleNotebookLmTab(notebookTab);
+
+  // A bridge page may poll while the user completes Google sign-in in another
+  // tab. Reuse that tab instead of opening one new login tab on every poll.
+  const pendingLoginTab = tabs.find(
+    (tab) =>
+      tab?.id &&
+      tab?.url &&
+      (isNotebookLmAuthRedirect(tab.url) || isNotebookLmUnavailableRedirect(tab.url)),
+  );
+  if (pendingLoginTab) return settleNotebookLmTab(pendingLoginTab);
+
   const tab = await chrome.tabs.create({
     url: NOTEBOOKLM_ENTRY_URL,
     active: true,
@@ -97,11 +111,11 @@ export async function ensureNotebookLmTab() {
 
 export function validateNotebookLmSourceUrl(sourceUrl) {
   const parsed = parseUrl(sourceUrl, 'NotebookLM source URL');
-  if (parsed.protocol !== 'https:' || parsed.hostname !== NOTEBOOKLM_HOST) {
-    throw new Error('NotebookLM must stay on notebooklm.google.com before syncing cookies.');
+  if (parsed.protocol !== 'https:' || !NOTEBOOKLM_HOSTS.has(parsed.hostname)) {
+    throw new Error('NotebookLM must stay on an official Google Notebook host before syncing cookies.');
   }
   if (!['', '/'].includes(parsed.pathname) || parsed.search || parsed.hash) {
-    throw new Error('NotebookLM cookie source must be https://notebooklm.google.com/.');
+    throw new Error('NotebookLM cookie source must be the root of an official Google Notebook host.');
   }
   return parsed;
 }
@@ -172,6 +186,7 @@ export async function postNotebookLmCookies({
   cookies,
   sourceUrl = NOTEBOOKLM_SOURCE_URL,
   scope = 'notebooklm',
+  profileLoginId = null,
 }) {
   const parsedSourceUrl = validateNotebookLmSourceUrl(sourceUrl);
   const parsedEndpoint = parseUrl(endpoint, 'Cookie sync endpoint');
@@ -198,6 +213,7 @@ export async function postNotebookLmCookies({
       source: 'drive-down-cookies',
       captured_at: new Date().toISOString(),
       challenge: challengeResult.challenge,
+      profile_login_id: normalizeProfileLoginId(profileLoginId),
       cookies,
     }),
   });
@@ -216,12 +232,13 @@ export async function syncNotebookLmCookies({
   token,
   sourceUrl = NOTEBOOKLM_SOURCE_URL,
   scope = 'notebooklm',
+  profileLoginId = null,
 } = {}) {
   const tab = await ensureNotebookLmTab();
   if (tab?.url) {
     if (isNotebookLmAuthRedirect(tab.url)) {
       throw new Error(
-        'NotebookLM opened Google sign-in instead of the notebooklm.google.com app. Re-authenticate in Chrome Profile 185 and try again.',
+        'NotebookLM opened Google sign-in instead of the Google Notebook app. Re-authenticate in Chrome Profile 185 and try again.',
       );
     }
     if (isNotebookLmUnavailableRedirect(tab.url)) {
@@ -231,7 +248,7 @@ export async function syncNotebookLmCookies({
     }
     if (!isNotebookLmUrl(tab.url)) {
       throw new Error(
-        'NotebookLM must be open at notebooklm.google.com before syncing cookies.',
+        'NotebookLM must be open on an official Google Notebook host before syncing cookies.',
       );
     }
   }
@@ -242,6 +259,7 @@ export async function syncNotebookLmCookies({
     cookies: capture.cookies,
     sourceUrl: capture.sourceUrl,
     scope,
+    profileLoginId,
   });
   return {
     ...result,

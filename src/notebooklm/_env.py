@@ -16,9 +16,12 @@ from urllib.parse import urlparse
 
 DEFAULT_BASE_URL = "https://notebooklm.google.com"
 PERSONAL_BASE_HOST = "notebooklm.google.com"
+CURRENT_PERSONAL_BASE_HOST = "notebook.google.com"
 ENTERPRISE_BASE_HOST = "notebooklm.cloud.google.com"
 
-_ALLOWED_BASE_HOSTS = frozenset({PERSONAL_BASE_HOST, ENTERPRISE_BASE_HOST})
+_ALLOWED_BASE_HOSTS = frozenset(
+    {PERSONAL_BASE_HOST, CURRENT_PERSONAL_BASE_HOST, ENTERPRISE_BASE_HOST}
+)
 
 
 def get_base_url() -> str:

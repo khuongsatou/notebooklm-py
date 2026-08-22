@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
+from uuid import uuid4
 
 from notebooklm.server.routes import cookie_sync
 
@@ -12,6 +13,10 @@ from .conftest import TEST_TOKEN
 
 def _auth_headers() -> dict[str, str]:
     return {"Authorization": f"Bearer {TEST_TOKEN}"}
+
+
+def _server_auth_headers() -> dict[str, str]:
+    return {**_auth_headers(), "Host": "127.0.0.1"}
 
 
 def _valid_payload(source_url: str = "https://notebooklm.google.com/") -> dict[str, object]:
@@ -49,10 +54,12 @@ def _valid_payload(source_url: str = "https://notebooklm.google.com/") -> dict[s
     }
 
 
-def _payload_with_challenge(raw_client) -> dict[str, object]:
+def _payload_with_challenge(
+    raw_client, source_url: str = "https://notebooklm.google.com/"
+) -> dict[str, object]:
     challenge = raw_client.get("/sync/challenge", headers=_auth_headers())
     assert challenge.status_code == 200
-    payload = _valid_payload()
+    payload = _valid_payload(source_url)
     payload["challenge"] = challenge.json()["challenge"]
     return payload
 
@@ -163,6 +170,86 @@ def test_cookie_sync_imports_cookie_json(raw_client, monkeypatch, tmp_path) -> N
     assert {"SID", "__Secure-1PSIDTS", "OSID"} <= names
 
 
+def test_cookie_sync_correlates_the_current_profile_login(
+    raw_client, monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setenv("NOTEBOOKLM_HOME", str(tmp_path))
+    monkeypatch.setenv("NOTEBOOKLM_PROFILE", "server")
+    profile_login_id = str(uuid4())
+
+    async def _verified(_request):
+        return True, None, 3
+
+    monkeypatch.setattr(cookie_sync, "_reload_lifespan_client", _verified)
+    payload = _payload_with_challenge(raw_client)
+    payload["profile_login_id"] = profile_login_id
+    imported = raw_client.post("/sync/cookies", json=payload, headers=_auth_headers())
+
+    assert imported.status_code == 200
+    assert imported.json()["profile_login_id"] == profile_login_id
+    matched = raw_client.get(
+        "/sync/connected",
+        params={"profile_login_id": profile_login_id},
+        headers=_auth_headers(),
+    )
+    assert matched.status_code == 200
+    assert matched.json()["connected"] is True
+    assert matched.json()["profile_login_matched"] is True
+
+    mismatched = raw_client.get(
+        "/sync/connected",
+        params={"profile_login_id": str(uuid4())},
+        headers=_auth_headers(),
+    )
+    assert mismatched.status_code == 200
+    assert mismatched.json()["connected"] is False
+    assert mismatched.json()["status"] == "waiting_for_profile_login"
+    assert mismatched.json()["profile_login_matched"] is False
+
+
+def test_cookie_sync_completes_hosted_profile_login_transaction(
+    raw_client, monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setenv("NOTEBOOKLM_HOME", str(tmp_path))
+    monkeypatch.setenv("NOTEBOOKLM_PROFILE", "server")
+
+    async def _verified(_request):
+        return True, None, 6
+
+    monkeypatch.setattr(cookie_sync, "_reload_lifespan_client", _verified)
+    started = raw_client.post(
+        "/auth/profile-login/start",
+        headers=_server_auth_headers(),
+    )
+    assert started.status_code == 200
+    login_id = started.json()["login_id"]
+    payload = _payload_with_challenge(raw_client)
+    payload["profile_login_id"] = login_id
+
+    imported = raw_client.post("/sync/cookies", json=payload, headers=_auth_headers())
+    status = raw_client.get(
+        "/auth/profile-login/status",
+        params={"profile_login_id": login_id},
+        headers=_server_auth_headers(),
+    )
+
+    assert imported.status_code == 200
+    assert status.status_code == 200
+    assert status.json()["connected"] is True
+    assert status.json()["status"] == "connected"
+    assert status.json()["cookie_count"] == 3
+    assert status.json()["notebook_count"] == 6
+
+
+def test_cookie_sync_rejects_invalid_profile_login_correlation(raw_client) -> None:
+    payload = _payload_with_challenge(raw_client)
+    payload["profile_login_id"] = "not-a-uuid"
+    response = raw_client.post("/sync/cookies", json=payload, headers=_auth_headers())
+
+    assert response.status_code == 400
+    assert "correlation ID is invalid" in response.json()["error"]["message"]
+
+
 def test_cookie_sync_rejects_incomplete_cookie_set(raw_client, monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("NOTEBOOKLM_HOME", str(tmp_path))
     monkeypatch.setenv("NOTEBOOKLM_PROFILE", "server")
@@ -184,12 +271,19 @@ def test_cookie_sync_rejects_missing_challenge(raw_client) -> None:
     assert "challenge" in resp.json()["error"]["message"].lower()
 
 
-def test_cookie_sync_rejects_non_notebooklm_source(raw_client) -> None:
-    payload = _valid_payload("https://notebook.google.com/")
+def test_cookie_sync_accepts_current_notebook_source(raw_client, monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("NOTEBOOKLM_HOME", str(tmp_path))
+    monkeypatch.setenv("NOTEBOOKLM_PROFILE", "server")
+
+    async def _verified(_request):
+        return True, None, 1
+
+    monkeypatch.setattr(cookie_sync, "_reload_lifespan_client", _verified)
+    payload = _payload_with_challenge(raw_client, "https://notebook.google.com/")
     resp = raw_client.post("/sync/cookies", json=payload, headers=_auth_headers())
 
-    assert resp.status_code == 400
-    assert "NotebookLM local Chrome" in resp.json()["error"]["message"]
+    assert resp.status_code == 200
+    assert resp.json()["auth_verified"] is True
 
 
 def test_cookie_sync_rejects_source_url_bypass(raw_client) -> None:

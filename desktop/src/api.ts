@@ -6,6 +6,7 @@ import type {
   DownloadResult,
   Label,
   LoginCommandResult,
+  HostedProfileLoginTransaction,
   McpConfig,
   McpKeyIssued,
   McpKeyList,
@@ -219,6 +220,18 @@ export const api = {
     request<{ ok: boolean; authenticated: boolean }>(
       "/auth/logout",
       { method: "POST", body: {} },
+      false,
+    ),
+  startHostedProfileLogin: () =>
+    request<HostedProfileLoginTransaction>(
+      "/auth/profile-login/start",
+      { method: "POST", body: {} },
+      false,
+    ),
+  hostedProfileLoginStatus: (loginId: string) =>
+    request<HostedProfileLoginTransaction>(
+      `/auth/profile-login/status?profile_login_id=${encodeURIComponent(loginId)}`,
+      {},
       false,
     ),
   status: () => request<{ ok: boolean; server: string; version: string }>("/v1/status"),

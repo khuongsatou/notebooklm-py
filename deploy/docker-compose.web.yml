@@ -9,6 +9,7 @@ services:
     command: ["notebooklm-server", "--host", "0.0.0.0", "--port", "8000"]
     environment:
       NOTEBOOKLM_DEPLOY_ENV: ${NOTEBOOKLM_DEPLOY_ENV:-development}
+      NOTEBOOKLM_BASE_URL: ${NOTEBOOKLM_BASE_URL:-https://notebook.google.com}
       NOTEBOOKLM_SERVER_TOKEN: ${NOTEBOOKLM_SERVER_TOKEN:-}
       NOTEBOOKLM_COOKIE_SYNC_TOKEN: ${NOTEBOOKLM_COOKIE_SYNC_TOKEN:-}
       NOTEBOOKLM_DASHBOARD_PASSWORD: ${NOTEBOOKLM_DASHBOARD_PASSWORD:-123}

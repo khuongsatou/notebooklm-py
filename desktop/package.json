@@ -16,6 +16,8 @@
     "build": "tsc --noEmit && vite build --mode production",
     "build:dev": "tsc --noEmit && vite build --mode development",
     "preview": "vite preview --host 127.0.0.1 --mode production",
+    "test:electron": "node --test electron/*.test.cjs",
+    "test:extension": "node --test ../extension_getcookie/notebooklm_sync.test.mjs",
     "test:ui": "playwright test",
     "test:ui:headed": "playwright test --headed",
     "test:ui:update": "playwright test --update-snapshots"

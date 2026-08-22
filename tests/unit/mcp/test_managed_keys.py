@@ -49,4 +49,6 @@ def test_public_manifest_config_uses_dedicated_mcp_origin(monkeypatch) -> None:
         "header": "Authorization",
         "valuePrefix": "Bearer",
     }
+    assert config["endpoints"]["appBaseUrl"] == "https://app.example.test"
+    assert config["permissions"]["callTools"] == "mcp-tools:call"
     assert sum(len(feature["tools"]) for feature in config["features"]) == 38
